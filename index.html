@@ -282,10 +282,6 @@
       <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>G</div>
       <div class="legend-item" style="margin-left:4px">★ Fixed S2 night</div>
       <div class="legend-item">☆ Random S2 night</div>
-      <div class="legend-item">
-        <div class="legend-swatch" style="background:rgba(136,192,208,0.2);border:1px solid rgba(136,192,208,0.35)"></div>
-        3 on floor
-      </div>
     </div>
     <p class="hint">Click a name to select, then click another name to swap — same day or different day. Cross-day swaps exchange days between two people.</p>
     <div class="calendar-wrap">
@@ -540,16 +536,17 @@ function buildShiftRow(sched, dayOff, wi, shift, label, time) {
 
     let tdCls = 'shift-cell';
     if (wk)      tdCls += ' weekend-col';
-    if (isDouble) tdCls += ' double-col';
+    /* double-col removed — count visible from names */
 
     h += `<td class="${tdCls}"><div class="cell-inner">`;
-    if (isDouble) h += `<span class="double-badge">3 on floor</span>`;
     if (isLow)    h += `<span class="low-badge">LOW</span>`;
 
     for (const person of people) {
       const mk     = person === 'Max' ? maxMarker(wi, d, shift) : '';
       const isSel  = selection && selection.person === person && selection.day === d && selection.shift === shift && selection.weekIdx === wi;
-      const isCand = selection && selection.weekIdx === wi && person !== selection.person && !(selection.day === d && selection.shift === shift);
+      // Valid candidate: different person, and selected person is NOT on this same day+shift
+      const isCand = selection && selection.weekIdx === wi && person !== selection.person
+        && !people.includes(selection.person);
       let cls = `name-tag ${PC[person].cls}`;
       if (isSel)  cls += ' selected';
       else if (isCand) cls += ' swap-candidate';
@@ -669,7 +666,7 @@ function handleClick(person, day, shift) {
 
   if (!selection) {
     selection = { person, day, shift, weekIdx: wi };
-    showMsg(`Selected ${person} on ${shift} ${day}. Now click a name on the other shift (same day) to swap.`, 'info');
+    showMsg(`Selected ${person} on ${shift} ${day}. Click any highlighted name to swap.`, 'info');
     render();
     return;
   }
