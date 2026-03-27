@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SBH Roster Planner — 5-Week Rotation</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2d3148;
+    --border: #2d3148; --border2: #3a3f5c; --text: #e2e4ea; --dim: #8b8fa3;
+    --gold: #f0c674; --purple: #b48ead; --blue: #81a1c1;
+    --green: #a3be8c; --red: #bf616a; --teal: #88c0d0; --orange: #d08770;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    padding: 24px; max-width: 1500px; margin: 0 auto; min-height: 100vh;
+  }
+
+  /* HEADER */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
+  }
+  .header-left { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.3px; }
+  .header h1 span { color: var(--gold); }
+  .subtitle { font-size: 0.8rem; color: var(--dim); margin-top: 2px; }
+
+  /* WEEK TABS */
+  .week-tabs { display: flex; gap: 4px; }
+  .week-btn {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--dim); padding: 7px 18px; border-radius: 7px;
+    cursor: pointer; font-size: 0.85rem; font-weight: 500;
+    transition: all 0.15s; font-family: inherit;
+  }
+  .week-btn.active { background: var(--gold); color: var(--bg); border-color: var(--gold); font-weight: 700; }
+  .week-btn:hover:not(.active) { border-color: var(--gold); color: var(--text); }
+
+  /* ACTION BUTTONS */
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .btn {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--dim); padding: 7px 14px; border-radius: 7px;
+    cursor: pointer; font-size: 0.82rem; font-family: inherit;
+    transition: all 0.15s; display: flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--border2); color: var(--text); }
+  .btn.btn-undo:hover { border-color: var(--blue); color: var(--blue); }
+  .btn.btn-reset:hover { border-color: var(--red); color: var(--red); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn:disabled:hover { border-color: var(--border); color: var(--dim); }
+
+  /* LAYOUT */
+  .main-layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; }
+  @media (max-width: 1100px) { .main-layout { grid-template-columns: 1fr; } }
+
+  /* WEEK META */
+  .week-meta {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+    display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+  }
+  .week-meta-item { font-size: 0.8rem; color: var(--dim); }
+  .week-meta-item strong { color: var(--gold); }
+
+  /* CALENDAR TABLE */
+  .calendar-wrap { overflow-x: auto; }
+  .calendar {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    background: var(--surface); border-radius: 10px;
+    border: 1px solid var(--border); overflow: hidden; margin-bottom: 16px;
+  }
+  .calendar th {
+    background: var(--surface2); color: var(--dim);
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px;
+    padding: 10px 6px; text-align: center; font-weight: 600; white-space: nowrap;
+  }
+  .calendar th.day-hdr { min-width: 118px; }
+  .calendar th.day-hdr.weekend { background: rgba(240,198,116,0.07); }
+  .day-label { font-size: 0.9rem; font-weight: 700; color: var(--text); display: block; }
+  .date-label { font-size: 0.68rem; color: var(--dim); display: block; margin-top: 1px; }
+  .shift-label { display: block; font-size: 0.7rem; color: var(--dim); }
+  .shift-time  { display: block; font-size: 0.65rem; color: var(--border2); }
+
+  .calendar td {
+    padding: 6px 4px; border-bottom: 1px solid rgba(45,49,72,0.5);
+    border-right: 1px solid rgba(45,49,72,0.4); vertical-align: middle;
+    position: relative;
+  }
+  .calendar tr:last-child td { border-bottom: none; }
+  .calendar td:last-child { border-right: none; }
+
+  .shift-type-cell {
+    background: var(--surface2); padding: 8px 10px; font-size: 0.75rem;
+    font-weight: 600; white-space: nowrap; border-right: 2px solid var(--border) !important;
+  }
+  .s1-row .shift-type-cell { color: var(--gold); }
+  .s2-row .shift-type-cell { color: var(--purple); }
+
+  .calendar td.weekend-col { background: rgba(240,198,116,0.025); }
+  .calendar td.double-col  { background: rgba(136,192,208,0.04); border-bottom-color: rgba(136,192,208,0.15) !important; }
+
+  /* SHIFT CELLS */
+  .shift-cell { padding: 5px !important; min-height: 52px !important; vertical-align: top !important; }
+  .cell-inner { display: flex; flex-wrap: wrap; gap: 4px; min-height: 40px; align-content: flex-start; padding: 2px; position: relative; }
+
+  /* NAME TAGS */
+  .name-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 5px; font-size: 0.76rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; border: 1.5px solid transparent;
+    user-select: none; white-space: nowrap;
+  }
+  .name-tag:hover { filter: brightness(1.2); transform: scale(1.04); }
+  .name-tag.selected {
+    border-color: var(--teal) !important;
+    box-shadow: 0 0 0 2px rgba(136,192,208,0.3);
+    filter: brightness(1.3);
+  }
+  .name-tag.swap-candidate {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 2px rgba(240,198,116,0.25);
+    animation: pulse-gold 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-gold {
+    0%,100% { box-shadow: 0 0 0 2px rgba(240,198,116,0.25); }
+    50%      { box-shadow: 0 0 0 5px rgba(240,198,116,0.35); }
+  }
+
+  /* Person colours */
+  .p-max    { background: rgba(240,198,116,0.18); color: var(--gold);   border-color: rgba(240,198,116,0.28); }
+  .p-huda   { background: rgba(180,142,173,0.18); color: var(--purple); border-color: rgba(180,142,173,0.28); }
+  .p-marcus { background: rgba(129,161,193,0.18); color: var(--blue);   border-color: rgba(129,161,193,0.28); }
+  .p-elisa  { background: rgba(163,190,140,0.18); color: var(--green);  border-color: rgba(163,190,140,0.28); }
+  .p-g      { background: rgba(208,135,112,0.18); color: var(--orange); border-color: rgba(208,135,112,0.28); }
+
+  /* Badges */
+  .double-badge {
+    position: absolute; top: 2px; right: 2px;
+    font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+    pointer-events: none;
+    background: rgba(136,192,208,0.15); color: var(--teal);
+    border: 1px solid rgba(136,192,208,0.3);
+  }
+  .low-badge {
+    position: absolute; top: 2px; right: 2px;
+    font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+    pointer-events: none;
+    background: rgba(191,97,106,0.15); color: var(--red);
+    border: 1px solid rgba(191,97,106,0.3);
+  }
+
+  /* OFF ROW */
+  .off-row-label {
+    background: var(--surface2); padding: 6px 10px; font-size: 0.7rem;
+    font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;
+    border-right: 2px solid var(--border) !important; white-space: nowrap;
+  }
+  .off-cell { padding: 5px 4px !important; font-size: 0.75rem; }
+  .off-tag {
+    display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px;
+    border-radius: 4px; font-size: 0.72rem; font-weight: 500;
+    font-style: italic; background: rgba(45,49,72,0.5); color: var(--dim);
+  }
+
+  /* SWAP MESSAGE */
+  .swap-msg {
+    padding: 10px 16px; border-radius: 8px; margin-bottom: 14px;
+    font-size: 0.83rem; display: none; align-items: center; gap: 8px;
+  }
+  .swap-msg.show { display: flex; }
+  .swap-msg.info    { background: rgba(129,161,193,0.1); border: 1px solid rgba(129,161,193,0.3); color: var(--blue); }
+  .swap-msg.success { background: rgba(163,190,140,0.1); border: 1px solid rgba(163,190,140,0.3); color: var(--green); }
+  .swap-msg.warn    { background: rgba(240,198,116,0.1); border: 1px solid rgba(240,198,116,0.3); color: var(--gold); }
+  .swap-msg.error   { background: rgba(191,97,106,0.1);  border: 1px solid rgba(191,97,106,0.3);  color: var(--red); }
+
+  /* LEGEND */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; font-size: 0.77rem; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+  .legend-dot    { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .legend-swatch { width: 14px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+
+  /* SIDEBAR */
+  .sidebar { display: flex; flex-direction: column; gap: 16px; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .panel-title {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--dim); font-weight: 600; margin-bottom: 12px;
+  }
+
+  /* SUMMARY TABLE */
+  .summary-table { width: 100%; border-collapse: collapse; }
+  .summary-table th {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--dim); font-weight: 500; padding: 4px 6px;
+    border-bottom: 1px solid var(--border); text-align: center;
+  }
+  .summary-table th:first-child { text-align: left; }
+  .summary-table td {
+    padding: 6px 6px; font-size: 0.8rem; text-align: center;
+    border-bottom: 1px solid rgba(45,49,72,0.4);
+  }
+  .summary-table td:first-child { text-align: left; }
+  .summary-table tr:last-child td { border-bottom: none; }
+  .person-cell { display: flex; align-items: center; gap: 7px; }
+  .person-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .bal-good { color: var(--green); font-weight: 600; }
+  .bal-warn { color: var(--gold);  font-weight: 600; }
+  .bal-bad  { color: var(--red);   font-weight: 600; }
+  .wknd-chip {
+    font-size: 0.65rem; padding: 1px 5px; border-radius: 3px;
+    background: rgba(240,198,116,0.12); color: var(--gold);
+    border: 1px solid rgba(240,198,116,0.25);
+  }
+
+  /* COVERAGE GRID */
+  .cov-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; }
+  .cov-day  { text-align: center; border-radius: 5px; overflow: hidden; }
+  .cov-day-lbl { font-size: 0.68rem; font-weight: 600; color: var(--dim); padding: 4px 2px 2px; text-align: center; }
+  .cov-row { font-size: 0.65rem; font-weight: 700; padding: 3px 2px; text-align: center; }
+  .cov-ok   { background: rgba(163,190,140,0.15); color: var(--green); }
+  .cov-high { background: rgba(136,192,208,0.15); color: var(--teal);  }
+  .cov-low  { background: rgba(191,97,106,0.15);  color: var(--red);   }
+
+  /* VIOLATIONS */
+  .viol-list { list-style: none; }
+  .viol-list li {
+    padding: 5px 0 5px 16px; position: relative; font-size: 0.79rem;
+    color: var(--dim); border-bottom: 1px solid rgba(45,49,72,0.4);
+  }
+  .viol-list li:last-child { border-bottom: none; }
+  .viol-list li::before { content:'!'; position:absolute; left:0; color:var(--red); font-weight:700; }
+  .viol-all-ok { color: var(--green); font-size: 0.82rem; font-style: italic; }
+
+  .hint { font-size: 0.77rem; color: var(--dim); margin-bottom: 12px; font-style: italic; }
+
+  @media (max-width: 768px) {
+    body { padding: 12px; }
+    .header { flex-direction: column; align-items: flex-start; }
+    .main-layout { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div>
+      <h1><span>SBH</span> Roster Planner</h1>
+      <div class="subtitle">5-Week Rotation · 5 Staff · 6 Shifts / Week Each · 7h per shift</div>
+    </div>
+    <div class="week-tabs">
+      <button class="week-btn active" onclick="setWeek(0)">W1</button>
+      <button class="week-btn" onclick="setWeek(1)">W2</button>
+      <button class="week-btn" onclick="setWeek(2)">W3</button>
+      <button class="week-btn" onclick="setWeek(3)">W4</button>
+      <button class="week-btn" onclick="setWeek(4)">W5</button>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn btn-undo" id="undoBtn" onclick="undoSwap()" disabled>↩ Undo</button>
+    <button class="btn btn-reset" onclick="resetSwaps()">Reset All</button>
+  </div>
+</div>
+
+<div class="swap-msg" id="swapMsg"></div>
+
+<div class="main-layout">
+  <div>
+    <div id="weekMeta" class="week-meta"></div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--gold)"></div>Max</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div>Huda</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Marcus</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Elisa</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>G</div>
+      <div class="legend-item" style="margin-left:4px">★ Fixed S2 night</div>
+      <div class="legend-item">☆ Random S2 night</div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:rgba(136,192,208,0.2);border:1px solid rgba(136,192,208,0.35)"></div>
+        3 on floor
+      </div>
+    </div>
+    <p class="hint">Click a name to select, then click another name to swap — same day or different day. Cross-day swaps exchange days between two people.</p>
+    <div class="calendar-wrap">
+      <table class="calendar" id="calTable"></table>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="panel">
+      <div class="panel-title">Weekly Summary</div>
+      <table class="summary-table" id="summaryTable"></table>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Daily Coverage</div>
+      <div class="cov-grid" id="covGrid"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Validation</div>
+      <div id="violPanel"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════
+const STAFF = ['Max','Huda','Marcus','Elisa','G'];
+const DAYS  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+const PC = {
+  Max:    { cls:'p-max',    hex:'#f0c674' },
+  Huda:   { cls:'p-huda',   hex:'#b48ead' },
+  Marcus: { cls:'p-marcus', hex:'#81a1c1' },
+  Elisa:  { cls:'p-elisa',  hex:'#a3be8c' },
+  G:      { cls:'p-g',      hex:'#d08770' },
+};
+
+// Weekend off rotation
+const WKND_OFF = [
+  { Sat:'Max',    Sun:'Huda'   },
+  { Sat:'Huda',   Sun:'Marcus' },
+  { Sat:'Marcus', Sun:'Elisa'  },
+  { Sat:'Elisa',  Sun:'G'      },
+  { Sat:'G',      Sun:'Max'    },
+];
+
+// Weekday offs (the 3 people not on weekend)
+const WKDAY_OFF = [
+  { Marcus:'Mon', Elisa:'Wed', G:'Thu'    },  // W1
+  { Elisa:'Mon',  G:'Wed',     Max:'Thu'  },  // W2
+  { Huda:'Mon',   G:'Wed',     Max:'Thu'  },  // W3
+  { Huda:'Mon',   Marcus:'Wed',Max:'Thu'  },  // W4
+  { Elisa:'Mon',  Marcus:'Wed',Huda:'Thu' },  // W5
+];
+
+// Max's S2 days per week (Mon+Tue always fixed ★, last one random ☆)
+const MAX_S2 = [
+  ['Mon','Tue','Thu'],  // W1: ★Mon ★Tue ☆Thu
+  ['Mon','Tue','Fri'],  // W2: ★Mon ★Tue ☆Fri
+  ['Mon','Tue','Fri'],  // W3: ★Mon ★Tue ☆Fri
+  ['Mon','Tue','Fri'],  // W4: ★Mon ★Tue ☆Fri
+  ['Mon','Tue','Fri'],  // W5: ★Mon ★Tue ☆Fri
+];
+const MAX_FIXED = ['Mon','Tue']; // always ★
+
+// ═══════════════════════════════════════════════════════════
+// VERIFIED SCHEDULE DATA (all 5 weeks, constraint-checked)
+// ═══════════════════════════════════════════════════════════
+//
+// Constraints satisfied per week:
+//  - Every person: exactly 3×S1 + 3×S2 = 6 shifts = 42h
+//  - Every shift: min 2 staff
+//  - Max on S2 Mon★ and Tue★ every week
+//  - 2 double-booking days (Tue S1 + Fri S2) each week
+//  - Each person: exactly 1 day off
+//
+const BASE_WEEKS = [
+  // ── W1 ── offs: Marcus=Mon, Elisa=Wed, G=Thu, Max=Sat, Huda=Sun
+  {
+    Mon: { S1:['Huda','G'],           S2:['Max','Elisa']         },
+    Tue: { S1:['Marcus','Elisa','G'], S2:['Max','Huda']          },
+    Wed: { S1:['Max','Marcus'],       S2:['Huda','G']            },
+    Thu: { S1:['Huda','Elisa'],       S2:['Max','Marcus']        },
+    Fri: { S1:['Max','Elisa'],        S2:['Huda','Marcus','G']   },
+    Sat: { S1:['Huda','Marcus'],      S2:['Elisa','G']           },
+    Sun: { S1:['Max','G'],            S2:['Marcus','Elisa']      },
+  },
+  // ── W2 ── offs: Elisa=Mon, G=Wed, Max=Thu, Huda=Sat, Marcus=Sun
+  {
+    Mon: { S1:['Huda','Marcus'],      S2:['Max','G']             },
+    Tue: { S1:['Huda','Marcus','Elisa'], S2:['Max','G']          },
+    Wed: { S1:['Max','Huda'],         S2:['Marcus','Elisa']      },
+    Thu: { S1:['Marcus','Elisa'],     S2:['Huda','G']            },
+    Fri: { S1:['Elisa','G'],          S2:['Max','Huda','Marcus'] },
+    Sat: { S1:['Max','G'],            S2:['Marcus','Elisa']      },
+    Sun: { S1:['Max','G'],            S2:['Huda','Elisa']        },
+  },
+  // ── W3 ── offs: Huda=Mon, G=Wed, Max=Thu, Marcus=Sat, Elisa=Sun
+  {
+    Mon: { S1:['Marcus','Elisa'],     S2:['Max','G']             },
+    Tue: { S1:['Huda','Elisa','G'],   S2:['Max','Marcus']        },
+    Wed: { S1:['Max','Marcus'],       S2:['Huda','Elisa']        },
+    Thu: { S1:['Huda','G'],           S2:['Marcus','Elisa']      },
+    Fri: { S1:['Huda','Marcus'],      S2:['Max','Elisa','G']     },
+    Sat: { S1:['Max','Elisa'],        S2:['Huda','G']            },
+    Sun: { S1:['Max','G'],            S2:['Huda','Marcus']       },
+  },
+  // ── W4 ── offs: Huda=Mon, Marcus=Wed, Max=Thu, Elisa=Sat, G=Sun
+  {
+    Mon: { S1:['Marcus','Elisa'],     S2:['Max','G']             },
+    Tue: { S1:['Huda','Elisa','G'],   S2:['Max','Marcus']        },
+    Wed: { S1:['Max','G'],            S2:['Huda','Elisa']        },
+    Thu: { S1:['Huda','G'],           S2:['Marcus','Elisa']      },
+    Fri: { S1:['Huda','Marcus'],      S2:['Max','Elisa','G']     },
+    Sat: { S1:['Max','Marcus'],       S2:['Huda','G']            },
+    Sun: { S1:['Max','Elisa'],        S2:['Huda','Marcus']       },
+  },
+  // ── W5 ── offs: Elisa=Mon, Marcus=Wed, Huda=Thu, G=Sat, Max=Sun
+  {
+    Mon: { S1:['Huda','Marcus'],      S2:['Max','G']             },
+    Tue: { S1:['Huda','Marcus','G'],  S2:['Max','Elisa']         },
+    Wed: { S1:['Max','Huda'],         S2:['Elisa','G']           },
+    Thu: { S1:['Max','Marcus'],       S2:['Elisa','G']           },
+    Fri: { S1:['Elisa','G'],          S2:['Max','Huda','Marcus'] },
+    Sat: { S1:['Max','Elisa'],        S2:['Huda','Marcus']       },
+    Sun: { S1:['Elisa','G'],          S2:['Huda','Marcus']       },
+  },
+];
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let liveWeeks   = BASE_WEEKS.map(w => deepCopy(w));
+let swapHistory = [];     // [{ weekIdx, snapshot }]
+let currentWeek = 0;
+let selection   = null;   // { person, day, shift, weekIdx }
+let msgTimer    = null;
+
+function deepCopy(o) { return JSON.parse(JSON.stringify(o)); }
+
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+function getOffs(wi) {
+  // Returns { personName: dayName }
+  const o = {};
+  const wo = WKND_OFF[wi];
+  o[wo.Sat] = 'Sat';
+  o[wo.Sun] = 'Sun';
+  for (const [p, d] of Object.entries(WKDAY_OFF[wi])) o[p] = d;
+  return o;
+}
+
+function getOffDay(wi, person) { return getOffs(wi)[person] || null; }
+
+// Returns '★' | '☆' | '' for Max on a given shift slot
+function maxMarker(wi, day, shift) {
+  if (shift !== 'S2') return '';
+  const s2days = MAX_S2[wi];
+  if (!s2days.includes(day)) return '';
+  return MAX_FIXED.includes(day) ? '★' : '☆';
+}
+
+// ═══════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════
+function render() {
+  renderMeta();
+  renderCalendar();
+  renderSummary();
+  renderCoverage();
+  renderViolations();
+  document.getElementById('undoBtn').disabled = swapHistory.length === 0;
+}
+
+function renderMeta() {
+  const wi   = currentWeek;
+  const offs  = getOffs(wi);
+  const wo    = WKND_OFF[wi];
+  const wd    = WKDAY_OFF[wi];
+  const sched = liveWeeks[wi];
+  const doubles = DAYS.filter(d => sched[d].S1.length >= 3 || sched[d].S2.length >= 3);
+  const randomDay = MAX_S2[wi].find(d => !MAX_FIXED.includes(d));
+
+  document.getElementById('weekMeta').innerHTML =
+    `<div class="week-meta-item"><strong>Weekend off:</strong> ${wo.Sat} (Sat), ${wo.Sun} (Sun)</div>` +
+    `<div class="week-meta-item"><strong>Weekday offs:</strong> ` +
+      Object.entries(wd).map(([p,d]) => `${p} (${d})`).join(', ') + `</div>` +
+    `<div class="week-meta-item"><strong>Max ☆:</strong> ${randomDay}</div>` +
+    `<div class="week-meta-item"><strong>Double days:</strong> ${doubles.join(', ') || 'none'}</div>`;
+}
+
+function renderCalendar() {
+  const wi    = currentWeek;
+  const sched = liveWeeks[wi];
+  const offs  = getOffs(wi);
+  // dayOff[day] = [people off that day]
+  const dayOff = {};
+  for (const [p, d] of Object.entries(offs)) {
+    if (!dayOff[d]) dayOff[d] = [];
+    dayOff[d].push(p);
+  }
+
+  let h = '<thead><tr><th></th>';
+  for (const d of DAYS) {
+    const wk = d === 'Sat' || d === 'Sun';
+    h += `<th class="day-hdr${wk?' weekend':''}">
+      <span class="day-label">${d}</span>
+      <span class="date-label">${wk?'Weekend':'Weekday'}</span>
+    </th>`;
+  }
+  h += '</tr></thead><tbody>';
+
+  // S1 row
+  h += buildShiftRow(sched, dayOff, wi, 'S1', 'Morning', '7am–3pm');
+  // S2 row
+  h += buildShiftRow(sched, dayOff, wi, 'S2', 'Evening',  '2pm–10pm');
+
+  // Off row
+  h += '<tr><td class="off-row-label">Day Off</td>';
+  for (const d of DAYS) {
+    const wk = d === 'Sat' || d === 'Sun';
+    const people = dayOff[d] || [];
+    h += `<td class="off-cell${wk?' weekend-col':''}">`;
+    if (people.length) {
+      people.forEach(p => {
+        h += `<span class="off-tag" style="color:${PC[p].hex}">${p}</span> `;
+      });
+    } else {
+      h += `<span style="color:var(--border2);font-size:0.7rem">—</span>`;
+    }
+    h += '</td>';
+  }
+  h += '</tr></tbody>';
+
+  document.getElementById('calTable').innerHTML = h;
+}
+
+function buildShiftRow(sched, dayOff, wi, shift, label, time) {
+  const rowCls = shift === 'S1' ? 's1-row' : 's2-row';
+  let h = `<tr class="${rowCls}">`;
+  h += `<td class="shift-type-cell">
+    <span class="shift-label">${label}</span>
+    <span class="shift-time">${time}</span>
+  </td>`;
+
+  for (const d of DAYS) {
+    const people  = sched[d][shift];
+    const wk      = d === 'Sat' || d === 'Sun';
+    const isDouble = people.length >= 3;
+    const isLow    = people.length < 2;
+
+    let tdCls = 'shift-cell';
+    if (wk)      tdCls += ' weekend-col';
+    if (isDouble) tdCls += ' double-col';
+
+    h += `<td class="${tdCls}"><div class="cell-inner">`;
+    if (isDouble) h += `<span class="double-badge">3 on floor</span>`;
+    if (isLow)    h += `<span class="low-badge">LOW</span>`;
+
+    for (const person of people) {
+      const mk     = person === 'Max' ? maxMarker(wi, d, shift) : '';
+      const isSel  = selection && selection.person === person && selection.day === d && selection.shift === shift && selection.weekIdx === wi;
+      const isCand = selection && selection.weekIdx === wi && person !== selection.person && !(selection.day === d && selection.shift === shift);
+      let cls = `name-tag ${PC[person].cls}`;
+      if (isSel)  cls += ' selected';
+      else if (isCand) cls += ' swap-candidate';
+
+      h += `<span class="${cls}" onclick="handleClick('${person}','${d}','${shift}')">${person}${mk}</span>`;
+    }
+    h += '</div></td>';
+  }
+  return h + '</tr>';
+}
+
+function renderSummary() {
+  const wi    = currentWeek;
+  const sched = liveWeeks[wi];
+  const offs  = getOffs(wi);
+  const wo    = WKND_OFF[wi];
+
+  let h = `<thead><tr>
+    <th>Person</th><th>S1</th><th>S2</th><th>Shifts</th><th>Off</th>
+  </tr></thead><tbody>`;
+
+  for (const p of STAFF) {
+    let s1 = 0, s2 = 0;
+    for (const d of DAYS) {
+      if (sched[d].S1.includes(p)) s1++;
+      if (sched[d].S2.includes(p)) s2++;
+    }
+    const total = s1 + s2;
+    const hours = total * 7;
+    const offDay = offs[p] || '?';
+    const wkndOff = wo.Sat === p || wo.Sun === p;
+    const diff = Math.abs(s1 - s2);
+    const balCls = diff === 0 ? 'bal-good' : diff === 1 ? 'bal-warn' : 'bal-bad';
+
+    h += `<tr>
+      <td>
+        <div class="person-cell">
+          <div class="person-dot" style="background:${PC[p].hex}"></div>
+          ${p}
+          ${wkndOff ? '<span class="wknd-chip">wknd</span>' : ''}
+        </div>
+      </td>
+      <td class="${balCls}">${s1}</td>
+      <td class="${balCls}">${s2}</td>
+      <td>${total} <span style="color:var(--dim);font-size:0.7rem">(${hours}h)</span></td>
+      <td style="color:${PC[p].hex};font-size:0.78rem">${offDay}</td>
+    </tr>`;
+  }
+  document.getElementById('summaryTable').innerHTML = h + '</tbody>';
+}
+
+function renderCoverage() {
+  const wi    = currentWeek;
+  const sched = liveWeeks[wi];
+  let h = '';
+  for (const d of DAYS) {
+    const s1 = sched[d].S1.length;
+    const s2 = sched[d].S2.length;
+    const s1cls = s1 >= 3 ? 'cov-high' : s1 >= 2 ? 'cov-ok' : 'cov-low';
+    const s2cls = s2 >= 3 ? 'cov-high' : s2 >= 2 ? 'cov-ok' : 'cov-low';
+    h += `<div class="cov-day">
+      <div class="cov-day-lbl">${d}</div>
+      <div class="cov-row ${s1cls}">S1·${s1}</div>
+      <div class="cov-row ${s2cls}">S2·${s2}</div>
+    </div>`;
+  }
+  document.getElementById('covGrid').innerHTML = h;
+}
+
+function renderViolations() {
+  const wi    = currentWeek;
+  const sched = liveWeeks[wi];
+  const issues = [];
+
+  // Min 2 per shift
+  for (const d of DAYS) {
+    for (const sh of ['S1','S2']) {
+      if (sched[d][sh].length < 2)
+        issues.push(`${d} ${sh}: only ${sched[d][sh].length} person (need ≥2)`);
+    }
+  }
+
+  // Max on S2 Mon + Tue
+  if (!sched.Mon.S2.includes('Max')) issues.push('Max missing from S2 Monday ★');
+  if (!sched.Tue.S2.includes('Max')) issues.push('Max missing from S2 Tuesday ★');
+
+  // Each person: 6 shifts, ≤44h
+  for (const p of STAFF) {
+    let cnt = 0;
+    for (const d of DAYS) {
+      if (sched[d].S1.includes(p)) cnt++;
+      if (sched[d].S2.includes(p)) cnt++;
+    }
+    if (cnt !== 6) issues.push(`${p}: ${cnt} shifts (expected 6)`);
+    if (cnt * 7 > 44) issues.push(`${p}: ${cnt * 7}h — exceeds 44h cap`);
+  }
+
+  // Total slots = 30
+  let slots = 0;
+  for (const d of DAYS) slots += sched[d].S1.length + sched[d].S2.length;
+  if (slots !== 30) issues.push(`Total slots: ${slots} (expected 30 = 5×6)`);
+
+  const el = document.getElementById('violPanel');
+  if (issues.length === 0) {
+    el.innerHTML = '<p class="viol-all-ok">✓ All constraints satisfied</p>';
+  } else {
+    el.innerHTML = '<ul class="viol-list">' +
+      issues.map(i => `<li>${i}</li>`).join('') + '</ul>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// SWAP LOGIC
+// ═══════════════════════════════════════════════════════════
+function handleClick(person, day, shift) {
+  const wi = currentWeek;
+
+  if (!selection) {
+    selection = { person, day, shift, weekIdx: wi };
+    showMsg(`Selected ${person} on ${shift} ${day}. Now click a name on the other shift (same day) to swap.`, 'info');
+    render();
+    return;
+  }
+
+  // Switching week mid-select
+  if (selection.weekIdx !== wi) {
+    selection = { person, day, shift, weekIdx: wi };
+    showMsg(`Selected ${person} on ${shift} ${day}.`, 'info');
+    render();
+    return;
+  }
+
+  // Clicking same person+day+shift — deselect
+  if (selection.person === person && selection.day === day && selection.shift === shift) {
+    selection = null;
+    showMsg('Selection cleared.', 'info');
+    render(); return;
+  }
+
+  // Same person, different slot — re-select
+  if (selection.person === person) {
+    selection = { person, day, shift, weekIdx: wi };
+    showMsg(`Re-selected ${person} on ${shift} ${day}.`, 'info');
+    render(); return;
+  }
+
+  // Different person → attempt swap (same day or cross-day)
+  doSwap(wi, selection.day, selection.person, selection.shift, day, person, shift);
+}
+
+function doSwap(wi, dayA, personA, shiftA, dayB, personB, shiftB) {
+  const sched = liveWeeks[wi];
+  const sameDay = dayA === dayB;
+
+  if (!sched[dayA][shiftA].includes(personA)) {
+    showMsg(`${personA} is not on ${shiftA} ${dayA}.`, 'error');
+    selection = null; render(); return;
+  }
+  if (!sched[dayB][shiftB].includes(personB)) {
+    showMsg(`${personB} is not on ${shiftB} ${dayB}.`, 'error');
+    selection = null; render(); return;
+  }
+  if (personA === personB) {
+    showMsg('Cannot swap a person with themselves.', 'error');
+    selection = null; render(); return;
+  }
+
+  // Cross-day: check neither ends up double-booked on target day
+  if (!sameDay) {
+    if (sched[dayB].S1.includes(personA) || sched[dayB].S2.includes(personA)) {
+      showMsg(`${personA} already works ${dayB} — would be double-booked.`, 'error');
+      selection = null; render(); return;
+    }
+    if (sched[dayA].S1.includes(personB) || sched[dayA].S2.includes(personB)) {
+      showMsg(`${personB} already works ${dayA} — would be double-booked.`, 'error');
+      selection = null; render(); return;
+    }
+  }
+
+  // Guard Max fixed S2 nights
+  if (personA === 'Max' && shiftA === 'S2' && maxMarker(wi, dayA, 'S2') === '★') {
+    showMsg(`Cannot remove Max from his fixed S2 night ★ on ${dayA}.`, 'error');
+    selection = null; render(); return;
+  }
+  if (personB === 'Max' && shiftB === 'S2' && maxMarker(wi, dayB, 'S2') === '★') {
+    showMsg(`Cannot remove Max from his fixed S2 night ★ on ${dayB}.`, 'error');
+    selection = null; render(); return;
+  }
+
+  // Snapshot BEFORE any changes
+  swapHistory.push({ weekIdx: wi, snapshot: deepCopy(sched) });
+
+  // Apply: remove each from their slot, add to the other's slot
+  sched[dayA][shiftA] = sched[dayA][shiftA].filter(p => p !== personA);
+  sched[dayB][shiftB] = sched[dayB][shiftB].filter(p => p !== personB);
+  sched[dayA][shiftA].push(personB);
+  sched[dayB][shiftB].push(personA);
+
+  // Check coverage (min 2) — rollback if violated
+  if (sched[dayA][shiftA].length < 2 || sched[dayB][shiftB].length < 2) {
+    liveWeeks[wi] = swapHistory.pop().snapshot;
+    showMsg(`Swap rejected — would drop a shift below minimum 2 staff.`, 'error');
+    selection = null; render(); return;
+  }
+
+  // Balance warnings
+  const warnings = [];
+  function countPost(p) {
+    let s1=0, s2=0;
+    for (const d of DAYS) { if (sched[d].S1.includes(p)) s1++; if (sched[d].S2.includes(p)) s2++; }
+    return { s1, s2 };
+  }
+  const ba = countPost(personA), bb = countPost(personB);
+  if (Math.abs(ba.s1 - ba.s2) > 2) warnings.push(`${personA} → ${ba.s1}×S1/${ba.s2}×S2 (imbalanced)`);
+  if (Math.abs(bb.s1 - bb.s2) > 2) warnings.push(`${personB} → ${bb.s1}×S1/${bb.s2}×S2 (imbalanced)`);
+  if (personA === 'Max' && shiftA === 'S2' && maxMarker(wi, dayA, 'S2') === '☆') warnings.push(`Moved Max off random S2 ☆ ${dayA}.`);
+  if (personB === 'Max' && shiftB === 'S2' && maxMarker(wi, dayB, 'S2') === '☆') warnings.push(`Moved Max off random S2 ☆ ${dayB}.`);
+
+  selection = null;
+  const label = sameDay ? `on ${dayA}` : `${dayA} ↔ ${dayB}`;
+  const msg = `✓ Swap: ${personA} (${shiftA} ${dayA}) ↔ ${personB} (${shiftB} ${dayB})`;
+  showMsg(warnings.length ? msg + '  ⚠ ' + warnings.join(' ') : msg,
+          warnings.length ? 'warn' : 'success');
+  render();
+}
+
+function undoSwap() {
+  if (!swapHistory.length) return;
+  const last = swapHistory.pop();
+  liveWeeks[last.weekIdx] = last.snapshot;
+  currentWeek = last.weekIdx;
+  updateWeekBtns();
+  showMsg('Last swap undone.', 'info');
+  render();
+}
+
+function resetSwaps() {
+  liveWeeks   = BASE_WEEKS.map(w => deepCopy(w));
+  swapHistory = [];
+  selection   = null;
+  showMsg('All swaps reset to base schedule.', 'info');
+  render();
+}
+
+// ═══════════════════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════════════════
+function setWeek(idx) {
+  currentWeek = idx;
+  selection   = null;
+  updateWeekBtns();
+  render();
+}
+
+function updateWeekBtns() {
+  document.querySelectorAll('.week-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i === currentWeek);
+  });
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('swapMsg');
+  el.textContent = text;
+  el.className = `swap-msg show ${type}`;
+  if (msgTimer) clearTimeout(msgTimer);
+  if (type === 'success' || type === 'info') {
+    msgTimer = setTimeout(() => el.classList.remove('show'), 4000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+render();
+</script>
+</body>
+</html>
