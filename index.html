@@ -1,54 +1,14 @@
 <!DOCTYPE html>
 <!--
-  SBH Roster — staff-facing shift view + swap requests
-  =====================================================
+  SBH Roster — staff-facing shift view (view-only)
+  =================================================
+  Staff log in with their PIN to see the monthly roster.
+  No swap functionality — view only.
+
   SUPABASE SETUP REQUIRED:
   1. Open your Supabase project → SQL Editor
-  2. Run the migration block at the bottom of this file comment section
+  2. Ensure the verify_pin RPC exists (returns [{staff_name}])
   3. Fill in your anon key below (Settings → API → "anon public" key)
-
-  ── SQL to run once in Supabase SQL Editor ──────────────────────────────────
-
-  CREATE OR REPLACE FUNCTION request_swap(
-    p_pin TEXT,
-    p_my_shift_id UUID,
-    p_their_shift_id UUID
-  ) RETURNS JSON
-  LANGUAGE plpgsql SECURITY DEFINER
-  AS $$
-  DECLARE
-    v_staff_id UUID;
-    v_target_staff_id UUID;
-  BEGIN
-    SELECT id INTO v_staff_id FROM attendance_staff WHERE pin = p_pin AND is_active = true;
-    IF v_staff_id IS NULL THEN RETURN '{"error":"Invalid PIN"}'::json; END IF;
-
-    IF NOT EXISTS (SELECT 1 FROM attendance_shifts WHERE id = p_my_shift_id AND staff_id = v_staff_id) THEN
-      RETURN '{"error":"That is not your shift"}'::json;
-    END IF;
-
-    SELECT staff_id INTO v_target_staff_id FROM attendance_shifts WHERE id = p_their_shift_id;
-    IF v_target_staff_id IS NULL THEN RETURN '{"error":"Target shift not found"}'::json; END IF;
-
-    IF v_staff_id = v_target_staff_id THEN
-      RETURN '{"error":"Cannot swap with yourself"}'::json;
-    END IF;
-
-    INSERT INTO swap_requests (requester_id, requester_shift_id, target_id, target_shift_id)
-    VALUES (v_staff_id, p_my_shift_id, v_target_staff_id, p_their_shift_id)
-    ON CONFLICT (requester_shift_id, target_shift_id) DO NOTHING;
-
-    RETURN '{"ok":true}'::json;
-  END;
-  $$;
-
-  -- Allow anon to call request_swap (PIN validates identity server-side)
-  GRANT EXECUTE ON FUNCTION request_swap(TEXT, UUID, UUID) TO anon;
-
-  -- Allow anon to read swap_requests (to show pending swaps)
-  CREATE POLICY "anon_read_swaps" ON swap_requests FOR SELECT TO anon USING (true);
-
-  ─────────────────────────────────────────────────────────────────────────────
 -->
 <html lang="en">
 <head>
@@ -56,6 +16,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SBH Roster</title>
 <style>
+/* ── DESIGN TOKENS ─────────────────────────────────────────────────────── */
 :root {
   --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2d3148;
   --border: #2d3148; --border2: #3a3f5c; --text: #e2e4ea; --dim: #8b8fa3;
@@ -68,7 +29,7 @@ body {
   background: var(--bg); color: var(--text); min-height: 100vh;
 }
 
-/* ── HEADER ── */
+/* ── HEADER ────────────────────────────────────────────────────────────── */
 .header {
   padding: 1rem 1.25rem 0.75rem;
   border-bottom: 1px solid var(--border);
@@ -77,7 +38,7 @@ body {
 .header-title { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.04em; color: var(--gold); }
 .header-sub { font-size: 0.72rem; color: var(--dim); margin-top: 1px; }
 
-/* ── PIN LOGIN ── */
+/* ── PIN LOGIN ─────────────────────────────────────────────────────────── */
 .pin-section {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: center;
 }
@@ -105,7 +66,7 @@ body {
 }
 .logout-btn:hover { color: var(--text); }
 
-/* ── MONTH NAV ── */
+/* ── MONTH NAV ─────────────────────────────────────────────────────────── */
 .month-nav {
   display: flex; align-items: center; gap: 0.75rem; justify-content: center;
   padding: 0.65rem 1rem; border-bottom: 1px solid var(--border);
@@ -118,7 +79,7 @@ body {
 .nav-btn:hover { border-color: var(--border2); color: var(--text); }
 .month-label { font-size: 0.95rem; font-weight: 600; min-width: 140px; text-align: center; }
 
-/* ── STATUS BAR ── */
+/* ── STATUS BAR ────────────────────────────────────────────────────────── */
 .status-bar {
   margin: 0.75rem 1rem 0; padding: 0.65rem 1rem; border-radius: 8px;
   font-size: 0.82rem; display: none; align-items: center; gap: 0.5rem;
@@ -133,7 +94,7 @@ body {
   font-size: 0.9rem; opacity: 0.6; font-family: inherit; padding: 0;
 }
 
-/* ── MAIN GRID ── */
+/* ── MAIN GRID ─────────────────────────────────────────────────────────── */
 main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 
 .loading, .load-error {
@@ -170,7 +131,7 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 .day-cell {
   background: var(--surface); border-radius: 4px;
   min-height: 58px; padding: 3px; position: relative;
-  border: 1px solid transparent; transition: border-color 0.15s;
+  border: 1px solid transparent;
 }
 .day-cell.today-col { border-color: rgba(240,198,116,0.3); }
 .day-cell.weekend { background: rgba(240,198,116,0.03); }
@@ -183,15 +144,15 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 
 .shifts-in-cell { display: flex; flex-direction: column; gap: 2px; }
 
-/* shift pill inside a day cell */
+/* shift pill — view only, never interactive */
 .shift-pill {
   display: flex; align-items: center; justify-content: space-between;
   padding: 2px 5px; border-radius: 4px; font-size: 0.68rem; font-weight: 600;
-  cursor: default; border: 1.5px solid transparent; transition: all 0.13s;
+  cursor: default; border: 1.5px solid transparent;
   user-select: none; gap: 3px;
 }
-.shift-pill.clickable { cursor: pointer; }
-.shift-pill.clickable:hover { filter: brightness(1.2); transform: scale(1.02); }
+/* slightly brighter pill for the logged-in user */
+.shift-pill.mine { filter: brightness(1.35); font-weight: 800; }
 
 /* shift type tints */
 .type-S1     { background: rgba(163,190,140,0.15); color: var(--green);  border-color: rgba(163,190,140,0.2); }
@@ -206,26 +167,10 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 }
 .pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
-/* selected + swap candidate states */
-.shift-pill.selected {
-  border-color: var(--teal) !important;
-  box-shadow: 0 0 0 2px rgba(136,192,208,0.35);
-  filter: brightness(1.3);
-}
-.shift-pill.swap-candidate {
-  border-color: var(--gold) !important;
-  box-shadow: 0 0 0 2px rgba(240,198,116,0.25);
-  animation: pulse-gold 1.3s ease-in-out infinite;
-}
-@keyframes pulse-gold {
-  0%,100% { box-shadow: 0 0 0 2px rgba(240,198,116,0.2); }
-  50%      { box-shadow: 0 0 0 5px rgba(240,198,116,0.35); }
-}
-
 /* empty cell placeholder */
 .no-shifts { color: var(--border2); font-size: 0.55rem; text-align: center; padding-top: 6px; }
 
-/* ── LEGEND ── */
+/* ── LEGEND ────────────────────────────────────────────────────────────── */
 .legend {
   display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; margin-top: 1rem;
   padding: 0.75rem 1rem; background: var(--surface); border-radius: 8px;
@@ -234,59 +179,7 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 .legend-item { display: flex; align-items: center; gap: 0.35rem; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-/* ── PENDING SWAPS ── */
-.pending-section {
-  margin-top: 1.25rem; padding: 0.75rem 1rem; background: var(--surface);
-  border-radius: 8px; border: 1px solid var(--border);
-}
-.pending-title {
-  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--dim); font-weight: 600; margin-bottom: 0.6rem;
-}
-.pending-item {
-  padding: 0.5rem 0; border-bottom: 1px solid var(--border);
-  font-size: 0.78rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-}
-.pending-item:last-child { border-bottom: none; }
-.pending-badge {
-  font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; font-weight: 600;
-  background: rgba(235,203,139,0.15); color: var(--amber); border: 1px solid rgba(235,203,139,0.3);
-}
-.empty-pending { color: var(--dim); font-size: 0.78rem; font-style: italic; }
-
-/* ── CONFIRM DIALOG ── */
-.overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
-  display: none; align-items: center; justify-content: center;
-  z-index: 100; padding: 1rem;
-}
-.overlay.show { display: flex; }
-.dialog {
-  background: var(--surface); border: 1px solid var(--border2);
-  border-radius: 12px; padding: 1.5rem; max-width: 420px; width: 100%;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-}
-.dialog h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
-.dialog .swap-desc {
-  font-size: 0.82rem; color: var(--dim); margin-bottom: 1.25rem; line-height: 1.5;
-}
-.dialog .swap-desc strong { color: var(--text); }
-.dialog-actions { display: flex; gap: 0.75rem; justify-content: flex-end; }
-.dialog-btn {
-  padding: 0.55rem 1.25rem; border-radius: 7px; font-size: 0.85rem;
-  cursor: pointer; font-family: inherit; transition: all 0.15s; border: 1px solid;
-}
-.dialog-btn.cancel {
-  background: var(--surface2); border-color: var(--border2); color: var(--dim);
-}
-.dialog-btn.cancel:hover { color: var(--text); }
-.dialog-btn.confirm {
-  background: rgba(136,192,208,0.15); border-color: var(--teal); color: var(--teal);
-}
-.dialog-btn.confirm:hover { background: rgba(136,192,208,0.25); }
-.dialog-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* ── RESPONSIVE ── */
+/* ── RESPONSIVE ────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
   .cal-header { grid-template-columns: 36px repeat(7, 1fr); }
   .week-row    { grid-template-columns: 36px repeat(7, 1fr); }
@@ -296,17 +189,16 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
   .pill-dot { display: none; }
   .pill-name { font-size: 0.62rem; }
   .header-title { font-size: 1.1rem; }
-  .dialog { padding: 1.1rem; }
 }
 </style>
 </head>
 <body>
 
-<!-- ── HEADER ─────────────────────────────────────────────────── -->
+<!-- ── HEADER ─────────────────────────────────────────────────────────── -->
 <div class="header">
   <div>
     <div class="header-title">SBH ROSTER</div>
-    <div class="header-sub">Shift view &amp; swap requests</div>
+    <div class="header-sub">Shift view</div>
   </div>
   <div class="pin-section">
     <input class="pin-input" id="pinInput" type="password" maxlength="4" placeholder="PIN" autocomplete="off">
@@ -318,51 +210,33 @@ main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
   </div>
 </div>
 
-<!-- ── MONTH NAV ───────────────────────────────────────────────── -->
+<!-- ── MONTH NAV ───────────────────────────────────────────────────────── -->
 <div class="month-nav">
   <button class="nav-btn" id="prevBtn">&#8592;</button>
   <div class="month-label" id="monthLabel"></div>
   <button class="nav-btn" id="nextBtn">&#8594;</button>
 </div>
 
-<!-- ── STATUS BAR ──────────────────────────────────────────────── -->
+<!-- ── STATUS BAR ─────────────────────────────────────────────────────── -->
 <div class="status-bar" id="statusBar">
   <span id="statusText"></span>
   <button class="dismiss" id="statusDismiss">✕</button>
 </div>
 
-<!-- ── MAIN CONTENT ─────────────────────────────────────────────── -->
+<!-- ── MAIN CONTENT ────────────────────────────────────────────────────── -->
 <main>
   <div id="calContainer"><div class="loading">Loading roster…</div></div>
-
   <div class="legend" id="legendRow"></div>
-
-  <div class="pending-section" id="pendingSection" style="display:none">
-    <div class="pending-title">Pending Swap Requests</div>
-    <div id="pendingList"></div>
-  </div>
 </main>
-
-<!-- ── CONFIRM DIALOG ───────────────────────────────────────────── -->
-<div class="overlay" id="overlay">
-  <div class="dialog">
-    <h3>Confirm Swap Request</h3>
-    <div class="swap-desc" id="dialogDesc"></div>
-    <div class="dialog-actions">
-      <button class="dialog-btn cancel" id="cancelBtn">Cancel</button>
-      <button class="dialog-btn confirm" id="confirmBtn">Send Request</button>
-    </div>
-  </div>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // CONFIG — fill in your anon key (Supabase → Settings → API → anon public)
-// ═══════════════════════════════════════════════════════════════════════
-const SUPABASE_URL = 'https://geheirnfbhqnhrjmrrax.supabase.co';
+// ═══════════════════════════════════════════════════════════════════════════
+const SUPABASE_URL      = 'https://geheirnfbhqnhrjmrrax.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdlaGVpcm5mYmhxbmhyam1ycmF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3NjQ2MzEsImV4cCI6MjA5MTM0MDYzMX0.vSlZoPo0nhHRMPARJZHZWyuWFyY2pb4Ck3YzwEjVslQ';
-// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 const STAFF_COLORS = {
   'Max':    '#F0C674',
@@ -379,37 +253,27 @@ const SHIFT_DEFS = {
   'S4':     { label: 'Shift 4', time: '9:00–17:00',  min: 1 },
   'Sunday': { label: 'Sunday',  time: '10:00–18:00', min: 1 },
 };
-// Evening shifts — need ≥2 coverage after a swap
-const EVENING_TYPES = new Set(['S2', 'S3']);
 
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ── State ──────────────────────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────────────────
 let monthOffset = 0;   // 0 = current month
-let myName = null;     // logged-in staff name
-let myPin  = null;     // stored in sessionStorage for RPC call
-let allShifts = [];    // raw shifts from DB for visible month
-let selection = null;  // { shiftId, staffName, shiftType, shiftDate, startTime, endTime }
+let myName      = null; // logged-in staff name
+let allShifts   = [];   // raw shifts from DB for visible month
 
-// ── Supabase session (sessionStorage) ─────────────────────────────────
+// ── Session (sessionStorage) ───────────────────────────────────────────────
 function restoreSession() {
-  try {
-    myName = sessionStorage.getItem('sbh_name') || null;
-    myPin  = sessionStorage.getItem('sbh_pin')  || null;
-  } catch(_) {}
+  try { myName = sessionStorage.getItem('sbh_name') || null; } catch(_) {}
 }
-function saveSession(name, pin) {
-  try {
-    sessionStorage.setItem('sbh_name', name);
-    sessionStorage.setItem('sbh_pin',  pin);
-  } catch(_) {}
+function saveSession(name) {
+  try { sessionStorage.setItem('sbh_name', name); } catch(_) {}
 }
 function clearSession() {
-  myName = null; myPin = null;
-  try { sessionStorage.removeItem('sbh_name'); sessionStorage.removeItem('sbh_pin'); } catch(_) {}
+  myName = null;
+  try { sessionStorage.removeItem('sbh_name'); } catch(_) {}
 }
 
-// ── Date helpers ────────────────────────────────────────────────────────
+// ── Date helpers ───────────────────────────────────────────────────────────
 function getMonthBounds(offset) {
   const d = new Date();
   d.setDate(1);
@@ -427,10 +291,9 @@ function monthName(m, y) {
   return new Date(y, m, 1).toLocaleString('en', { month: 'long', year: 'numeric' });
 }
 
-// Get Mon–Sun weeks that cover the month
+// Returns Mon–Sun week arrays covering the full month
 function getWeeksForMonth(year, month) {
   const weeks = [];
-  // First Monday on or before the 1st
   const first = new Date(year, month, 1);
   const dow   = first.getDay(); // 0=Sun
   const mondayOffset = dow === 0 ? -6 : 1 - dow;
@@ -444,7 +307,6 @@ function getWeeksForMonth(year, month) {
       week.push(d);
     }
     weeks.push(week);
-    // Stop when Monday is past the last day of the month
     const next = new Date(monday);
     next.setDate(next.getDate() + 7);
     if (next.getMonth() !== month && next > new Date(year, month + 1, 0)) break;
@@ -454,7 +316,7 @@ function getWeeksForMonth(year, month) {
   return weeks;
 }
 
-// ── Status bar ──────────────────────────────────────────────────────────
+// ── Status bar ─────────────────────────────────────────────────────────────
 function showStatus(msg, type = 'info', autoDismiss = 0) {
   const bar  = document.getElementById('statusBar');
   const text = document.getElementById('statusText');
@@ -464,7 +326,7 @@ function showStatus(msg, type = 'info', autoDismiss = 0) {
 }
 function hideStatus() { document.getElementById('statusBar').classList.remove('show'); }
 
-// ── Auth UI ─────────────────────────────────────────────────────────────
+// ── Auth UI ────────────────────────────────────────────────────────────────
 function updateAuthUI() {
   const badge    = document.getElementById('loggedBadge');
   const nameEl   = document.getElementById('loggedName');
@@ -472,11 +334,11 @@ function updateAuthUI() {
   const pinBtn   = document.getElementById('pinBtn');
   if (myName) {
     badge.style.display = 'flex';
-    nameEl.textContent = `✓ ${myName}`;
+    nameEl.textContent  = `✓ ${myName}`;
     pinInput.style.display = 'none';
     pinBtn.style.display   = 'none';
   } else {
-    badge.style.display = 'none';
+    badge.style.display    = 'none';
     pinInput.style.display = '';
     pinBtn.style.display   = '';
   }
@@ -494,24 +356,20 @@ async function doLogin() {
     return;
   }
   myName = data[0].staff_name;
-  myPin  = pin;
-  saveSession(myName, pin);
+  saveSession(myName);
   updateAuthUI();
-  selection = null;
   renderCalendar();
-  loadPending();
   showStatus(`Logged in as ${myName}`, 'ok', 2000);
 }
 
 function doLogout() {
-  clearSession(); selection = null;
+  clearSession();
   updateAuthUI();
   renderCalendar();
-  loadPending();
   hideStatus();
 }
 
-// ── Load roster ──────────────────────────────────────────────────────────
+// ── Load roster ────────────────────────────────────────────────────────────
 async function loadRoster() {
   const { start, end, year, month } = getMonthBounds(monthOffset);
   document.getElementById('monthLabel').textContent = monthName(month, year);
@@ -530,70 +388,10 @@ async function loadRoster() {
     return;
   }
   allShifts = data || [];
-  selection = null;
   renderCalendar();
-  loadPending();
 }
 
-// ── Pending swaps ────────────────────────────────────────────────────────
-async function loadPending() {
-  const section = document.getElementById('pendingSection');
-  const list    = document.getElementById('pendingList');
-  if (!myName) { section.style.display = 'none'; return; }
-
-  // Get my staff_id first
-  const { data: meData } = await db
-    .from('attendance_staff')
-    .select('id')
-    .eq('name', myName)
-    .single();
-  if (!meData) return;
-
-  const myId = meData.id;
-  const { data: swaps } = await db
-    .from('swap_requests')
-    .select(`id, status, requested_at,
-      requester:requester_id(id, name),
-      target:target_id(id, name),
-      requester_shift:requester_shift_id(shift_date, shift_type, start_time),
-      target_shift:target_shift_id(shift_date, shift_type, start_time)`)
-    .or(`requester_id.eq.${myId},target_id.eq.${myId}`)
-    .eq('status', 'pending')
-    .order('requested_at', { ascending: false })
-    .limit(10);
-
-  if (!swaps || swaps.length === 0) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = '';
-  let html = '';
-  for (const s of swaps) {
-    const rs = s.requester_shift;
-    const ts = s.target_shift;
-    const rsDate = rs ? fmtDate(rs.shift_date) : '?';
-    const tsDate = ts ? fmtDate(ts.shift_date) : '?';
-    const isRequester = s.requester && s.requester.id === myId;
-    const role = isRequester ? 'You requested' : 'Incoming from';
-    const other = isRequester ? (s.target?.name || '?') : (s.requester?.name || '?');
-    html += `<div class="pending-item">
-      <span class="pending-badge">pending</span>
-      <span>${role} <strong>${other}</strong>:
-        ${rs?.shift_type || '?'} on ${rsDate}
-        ↔ ${ts?.shift_type || '?'} on ${tsDate}
-      </span>
-    </div>`;
-  }
-  list.innerHTML = html;
-}
-
-function fmtDate(dateStr) {
-  if (!dateStr) return '?';
-  const d = new Date(dateStr + 'T00:00:00');
-  return d.toLocaleDateString('en', { weekday: 'short', day: 'numeric', month: 'short' });
-}
-
-// ── Render calendar ────────────────────────────────────────────────────
+// ── Render calendar ────────────────────────────────────────────────────────
 function renderCalendar() {
   const { year, month } = getMonthBounds(monthOffset);
   const weeks = getWeeksForMonth(year, month);
@@ -607,10 +405,9 @@ function renderCalendar() {
   }
 
   const DAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
   let html = '';
 
-  // Header
+  // Day-of-week header
   html += '<div class="cal-header">';
   html += '<div class="cal-header-cell"></div>';
   for (let i = 0; i < 7; i++) {
@@ -619,18 +416,19 @@ function renderCalendar() {
   }
   html += '</div>';
 
-  // Weeks
+  // Week rows
   for (let wi = 0; wi < weeks.length; wi++) {
     const week = weeks[wi];
     html += `<div class="week-row">`;
     html += `<div class="week-label-cell">W${wi + 1}</div>`;
 
     for (let di = 0; di < 7; di++) {
-      const d = week[di];
-      const ds = fmt(d);
-      const inMonth = d.getMonth() === month;
-      const isToday = ds === today;
-      const isWknd  = di >= 5;
+      const d        = week[di];
+      const ds       = fmt(d);
+      const inMonth  = d.getMonth() === month;
+      const isToday  = ds === today;
+      const isWknd   = di >= 5;
+
       let cellClass = 'day-cell';
       if (isToday)  cellClass += ' today-col';
       if (isWknd)   cellClass += ' weekend';
@@ -645,26 +443,16 @@ function renderCalendar() {
       if (shifts.length === 0) {
         if (inMonth) html += `<div class="no-shifts">—</div>`;
       } else {
-        // Sort by start time
         shifts.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
         for (const sh of shifts) {
           const staffName = sh.attendance_staff?.name || '?';
-          const color  = STAFF_COLORS[staffName] || '#8b8fa3';
-          const isMe   = myName && staffName === myName;
-          const isSel  = selection && selection.shiftId === sh.id;
-          const isCand = selection && !isSel && canSwap(selection, sh);
+          const color     = STAFF_COLORS[staffName] || '#8b8fa3';
+          const isMe      = myName && staffName === myName;
 
           let pillClass = `shift-pill type-${sh.shift_type.replace(/\s+/g, '')}`;
-          if (isMe || selection) pillClass += ' clickable';
-          if (isSel)             pillClass += ' selected';
-          else if (isCand)       pillClass += ' swap-candidate';
+          if (isMe) pillClass += ' mine';
 
-          const onclick = (isMe && !isSel) || isCand || isSel
-            ? `onclick="handlePillClick('${sh.id}')"`
-            : '';
-
-          html += `<div class="${pillClass}" ${onclick}
-            data-shift-id="${sh.id}"
+          html += `<div class="${pillClass}"
             title="${staffName}: ${sh.shift_type} ${sh.start_time}–${sh.end_time}">
             <span class="pill-dot" style="background:${color}"></span>
             <span class="pill-name">${staffName}</span>
@@ -678,11 +466,10 @@ function renderCalendar() {
   }
 
   document.getElementById('calContainer').innerHTML = html;
-
-  // Render legend
   renderLegend();
 }
 
+// ── Render legend ──────────────────────────────────────────────────────────
 function renderLegend() {
   let html = '';
   for (const [name, color] of Object.entries(STAFF_COLORS)) {
@@ -692,219 +479,16 @@ function renderLegend() {
       <span style="${isMe ? `color:${color};font-weight:700` : ''}">${name}</span>
     </div>`;
   }
-  html += `<div class="legend-item" style="margin-left:auto;gap:0.5rem">
-    <span style="color:var(--teal)">■</span><span>selected</span>
-    <span style="color:var(--gold);margin-left:0.5rem">■</span><span>swap target</span>
-  </div>`;
   document.getElementById('legendRow').innerHTML = html;
 }
 
-// ── Swap logic ────────────────────────────────────────────────────────
-// selection = { shiftId, staffName, shiftType, shiftDate, startTime, endTime }
-// candidate = raw shift row from allShifts
-
-function canSwap(sel, candidate) {
-  if (!sel || !myName) return false;
-  const candName = candidate.attendance_staff?.name;
-  if (!candName || candName === sel.staffName) return false;
-
-  // Must be different people
-  if (sel.staffName === candName) return false;
-
-  // Can't swap to a day you're already working
-  if (sel.shiftDate !== candidate.shift_date) {
-    // Check if myName (sel.staffName) already works on candidate's date
-    const myShiftsOnCandDate = allShifts.filter(
-      s => s.attendance_staff?.name === sel.staffName && s.shift_date === candidate.shift_date
-    );
-    if (myShiftsOnCandDate.length > 0) return false;
-
-    // Check if candidate's person already works on sel.shiftDate
-    const theirShiftsOnMyDate = allShifts.filter(
-      s => s.attendance_staff?.name === candName && s.shift_date === sel.shiftDate
-    );
-    if (theirShiftsOnMyDate.length > 0) return false;
-  } else {
-    // Same day: can't swap same shift type (same slot)
-    if (sel.shiftType === candidate.shift_type) return false;
-  }
-
-  // Evening coverage check: after swapping, evening shifts on both dates must still have ≥2
-  if (!eveningCoverageOk(sel, candidate)) return false;
-
-  // 7-day stretch check (simple: within visible allShifts)
-  if (!checkNoSevenDayStretch(sel.staffName, sel.shiftDate, candidate.shift_date)) return false;
-  if (!checkNoSevenDayStretch(candName,      candidate.shift_date, sel.shiftDate)) return false;
-
-  return true;
-}
-
-function eveningCoverageOk(sel, candidate) {
-  // If either shift being swapped is an evening type, check coverage stays ≥2
-  const minEvening = 2;
-
-  // sel is going to candidate.shift_date (gaining candidate.shift_type)
-  // candidate person is going to sel.shiftDate (gaining sel.shiftType)
-
-  // Evening count on sel.shiftDate after swap:
-  if (EVENING_TYPES.has(sel.shiftType)) {
-    const countBefore = allShifts.filter(
-      s => s.shift_date === sel.shiftDate && EVENING_TYPES.has(s.shift_type)
-    ).length;
-    // sel person leaves; candidate person may or may not arrive with an evening type
-    const candBringsEvening = EVENING_TYPES.has(candidate.shift_type) ? 1 : 0;
-    const countAfter = countBefore - 1 + (EVENING_TYPES.has(sel.shiftType) ? 0 : 0) + candBringsEvening;
-    // Actually: sel removes their evening from sel.shiftDate, candidate adds their shift_type on sel.shiftDate
-    const afterCount = allShifts.filter(s =>
-      s.shift_date === sel.shiftDate &&
-      EVENING_TYPES.has(s.shift_type) &&
-      !(s.id === sel.shiftId)
-    ).length + (EVENING_TYPES.has(candidate.shift_type) ? 1 : 0);
-    if (afterCount < minEvening) return false;
-  }
-
-  if (EVENING_TYPES.has(candidate.shift_type)) {
-    const afterCount = allShifts.filter(s =>
-      s.shift_date === candidate.shift_date &&
-      EVENING_TYPES.has(s.shift_type) &&
-      !(s.id === candidate.id)
-    ).length + (EVENING_TYPES.has(sel.shiftType) ? 1 : 0);
-    if (afterCount < minEvening) return false;
-  }
-
-  return true;
-}
-
-function checkNoSevenDayStretch(staffName, removingDate, addingDate) {
-  // Get all dates this person works (within visible allShifts), simulate swap
-  const dates = allShifts
-    .filter(s => s.attendance_staff?.name === staffName)
-    .map(s => s.shift_date)
-    .filter(d => d !== removingDate);
-  dates.push(addingDate);
-  dates.sort();
-
-  // Check no 7 consecutive days
-  for (let i = 0; i <= dates.length - 7; i++) {
-    const first = new Date(dates[i]  + 'T00:00:00');
-    const last  = new Date(dates[i+6] + 'T00:00:00');
-    const diff  = (last - first) / 86400000;
-    if (diff === 6) return false; // 7 consecutive days
-  }
-  return true;
-}
-
-// ── Click handlers ─────────────────────────────────────────────────────
-function handlePillClick(shiftId) {
-  if (!myName) {
-    showStatus('Please log in to request swaps', 'warn', 3000);
-    return;
-  }
-
-  const shift = allShifts.find(s => s.id === shiftId);
-  if (!shift) return;
-
-  const staffName = shift.attendance_staff?.name;
-
-  // If clicking on own shift → select it (or deselect)
-  if (staffName === myName) {
-    if (selection && selection.shiftId === shiftId) {
-      // Deselect
-      selection = null;
-      hideStatus();
-    } else {
-      selection = {
-        shiftId:   shift.id,
-        staffName: staffName,
-        shiftType: shift.shift_type,
-        shiftDate: shift.shift_date,
-        startTime: shift.start_time,
-        endTime:   shift.end_time,
-      };
-      showStatus(`Selected your ${shift.shift_type} on ${fmtDate(shift.shift_date)} — now click a swap target`, 'info');
-    }
-    renderCalendar();
-    return;
-  }
-
-  // Clicking another person's shift
-  if (!selection) {
-    showStatus('Click one of your own shifts first', 'warn', 3000);
-    return;
-  }
-
-  // Validate
-  if (!canSwap(selection, shift)) {
-    showStatus('This swap is not allowed (coverage or schedule conflict)', 'error', 3500);
-    return;
-  }
-
-  // Open confirmation dialog
-  openDialog(selection, shift, staffName);
-}
-
-// ── Dialog ─────────────────────────────────────────────────────────────
-let pendingSwap = null;
-
-function openDialog(myShift, theirShift, theirName) {
-  pendingSwap = { myShift, theirShift, theirName };
-  const myDate    = fmtDate(myShift.shiftDate);
-  const theirDate = fmtDate(theirShift.shift_date);
-  document.getElementById('dialogDesc').innerHTML =
-    `Swap your <strong>${myShift.shiftType}</strong> (${myDate}) ` +
-    `with <strong>${theirName}</strong>'s <strong>${theirShift.shift_type}</strong> (${theirDate})?` +
-    `<br><br><span style="color:var(--dim);font-size:0.75rem">This sends a request — ${theirName} will be notified via Telegram.</span>`;
-  document.getElementById('overlay').classList.add('show');
-  document.getElementById('confirmBtn').disabled = false;
-}
-
-function closeDialog() {
-  document.getElementById('overlay').classList.remove('show');
-  pendingSwap = null;
-}
-
-async function submitSwap() {
-  if (!pendingSwap || !myPin) return;
-  const btn = document.getElementById('confirmBtn');
-  btn.disabled = true;
-  btn.textContent = 'Sending…';
-
-  const { data, error } = await db.rpc('request_swap', {
-    p_pin:           myPin,
-    p_my_shift_id:   pendingSwap.myShift.shiftId,
-    p_their_shift_id: pendingSwap.theirShift.id,
-  });
-
-  closeDialog();
-  btn.textContent = 'Send Request';
-
-  if (error) {
-    showStatus(`Error: ${error.message}`, 'error', 5000);
-    return;
-  }
-  if (data && data.error) {
-    showStatus(`Error: ${data.error}`, 'error', 5000);
-    return;
-  }
-
-  selection = null;
-  showStatus(`Swap request sent to ${pendingSwap?.theirName || 'staff member'}`, 'ok', 4000);
-  renderCalendar();
-  loadPending();
-}
-
-// ── Init ───────────────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────────────────────
 document.getElementById('pinBtn').addEventListener('click', doLogin);
 document.getElementById('pinInput').addEventListener('keyup', e => { if (e.key === 'Enter') doLogin(); });
 document.getElementById('logoutBtn').addEventListener('click', doLogout);
 document.getElementById('prevBtn').addEventListener('click', () => { monthOffset--; loadRoster(); });
 document.getElementById('nextBtn').addEventListener('click', () => { monthOffset++; loadRoster(); });
 document.getElementById('statusDismiss').addEventListener('click', hideStatus);
-document.getElementById('cancelBtn').addEventListener('click', closeDialog);
-document.getElementById('confirmBtn').addEventListener('click', submitSwap);
-document.getElementById('overlay').addEventListener('click', e => {
-  if (e.target === document.getElementById('overlay')) closeDialog();
-});
 
 restoreSession();
 updateAuthUI();
