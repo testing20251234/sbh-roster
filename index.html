@@ -1,826 +1,914 @@
 <!DOCTYPE html>
+<!--
+  SBH Roster — staff-facing shift view + swap requests
+  =====================================================
+  SUPABASE SETUP REQUIRED:
+  1. Open your Supabase project → SQL Editor
+  2. Run the migration block at the bottom of this file comment section
+  3. Fill in your anon key below (Settings → API → "anon public" key)
+
+  ── SQL to run once in Supabase SQL Editor ──────────────────────────────────
+
+  CREATE OR REPLACE FUNCTION request_swap(
+    p_pin TEXT,
+    p_my_shift_id UUID,
+    p_their_shift_id UUID
+  ) RETURNS JSON
+  LANGUAGE plpgsql SECURITY DEFINER
+  AS $$
+  DECLARE
+    v_staff_id UUID;
+    v_target_staff_id UUID;
+  BEGIN
+    SELECT id INTO v_staff_id FROM attendance_staff WHERE pin = p_pin AND is_active = true;
+    IF v_staff_id IS NULL THEN RETURN '{"error":"Invalid PIN"}'::json; END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM attendance_shifts WHERE id = p_my_shift_id AND staff_id = v_staff_id) THEN
+      RETURN '{"error":"That is not your shift"}'::json;
+    END IF;
+
+    SELECT staff_id INTO v_target_staff_id FROM attendance_shifts WHERE id = p_their_shift_id;
+    IF v_target_staff_id IS NULL THEN RETURN '{"error":"Target shift not found"}'::json; END IF;
+
+    IF v_staff_id = v_target_staff_id THEN
+      RETURN '{"error":"Cannot swap with yourself"}'::json;
+    END IF;
+
+    INSERT INTO swap_requests (requester_id, requester_shift_id, target_id, target_shift_id)
+    VALUES (v_staff_id, p_my_shift_id, v_target_staff_id, p_their_shift_id)
+    ON CONFLICT (requester_shift_id, target_shift_id) DO NOTHING;
+
+    RETURN '{"ok":true}'::json;
+  END;
+  $$;
+
+  -- Allow anon to call request_swap (PIN validates identity server-side)
+  GRANT EXECUTE ON FUNCTION request_swap(TEXT, UUID, UUID) TO anon;
+
+  -- Allow anon to read swap_requests (to show pending swaps)
+  CREATE POLICY "anon_read_swaps" ON swap_requests FOR SELECT TO anon USING (true);
+
+  ─────────────────────────────────────────────────────────────────────────────
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SBH Roster Planner — 5-Week Rotation</title>
+<title>SBH Roster</title>
 <style>
-  :root {
-    --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2d3148;
-    --border: #2d3148; --border2: #3a3f5c; --text: #e2e4ea; --dim: #8b8fa3;
-    --gold: #f0c674; --purple: #b48ead; --blue: #81a1c1;
-    --green: #a3be8c; --red: #bf616a; --teal: #88c0d0; --orange: #d08770;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: var(--bg); color: var(--text);
-    font-family: 'Inter', -apple-system, system-ui, sans-serif;
-    padding: 24px; max-width: 1500px; margin: 0 auto; min-height: 100vh;
-  }
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2d3148;
+  --border: #2d3148; --border2: #3a3f5c; --text: #e2e4ea; --dim: #8b8fa3;
+  --gold: #f0c674; --purple: #b48ead; --blue: #81a1c1;
+  --green: #a3be8c; --red: #bf616a; --teal: #88c0d0; --amber: #ebcb8b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh;
+}
 
-  /* HEADER */
-  .header {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
-  }
-  .header-left { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-  .header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.3px; }
-  .header h1 span { color: var(--gold); }
-  .subtitle { font-size: 0.8rem; color: var(--dim); margin-top: 2px; }
+/* ── HEADER ── */
+.header {
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
+}
+.header-title { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.04em; color: var(--gold); }
+.header-sub { font-size: 0.72rem; color: var(--dim); margin-top: 1px; }
 
-  /* WEEK TABS */
-  .week-tabs { display: flex; gap: 4px; }
-  .week-btn {
-    background: var(--surface); border: 1px solid var(--border);
-    color: var(--dim); padding: 7px 18px; border-radius: 7px;
-    cursor: pointer; font-size: 0.85rem; font-weight: 500;
-    transition: all 0.15s; font-family: inherit;
-  }
-  .week-btn.active { background: var(--gold); color: var(--bg); border-color: var(--gold); font-weight: 700; }
-  .week-btn:hover:not(.active) { border-color: var(--gold); color: var(--text); }
+/* ── PIN LOGIN ── */
+.pin-section {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: center;
+}
+.pin-input {
+  background: var(--surface); border: 1px solid var(--border2); color: var(--text);
+  padding: 0.5rem 0.75rem; border-radius: 7px; width: 130px; font-size: 0.85rem;
+  text-align: center; letter-spacing: 0.2em; outline: none; transition: border-color 0.15s;
+}
+.pin-input:focus { border-color: var(--teal); }
+.pin-input.error { border-color: var(--red); }
+.pin-btn {
+  background: var(--surface2); border: 1px solid var(--border2); color: var(--gold);
+  padding: 0.5rem 1rem; border-radius: 7px; cursor: pointer; font-size: 0.85rem;
+  font-family: inherit; transition: all 0.15s;
+}
+.pin-btn:hover { background: var(--surface3); }
+.logged-badge {
+  display: none; align-items: center; gap: 0.5rem;
+  background: rgba(163,190,140,0.1); border: 1px solid rgba(163,190,140,0.3);
+  color: var(--green); padding: 0.4rem 0.9rem; border-radius: 7px; font-size: 0.82rem;
+}
+.logout-btn {
+  background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.75rem;
+  padding: 0 0.25rem; font-family: inherit;
+}
+.logout-btn:hover { color: var(--text); }
 
-  /* ACTION BUTTONS */
-  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .btn {
-    background: var(--surface); border: 1px solid var(--border);
-    color: var(--dim); padding: 7px 14px; border-radius: 7px;
-    cursor: pointer; font-size: 0.82rem; font-family: inherit;
-    transition: all 0.15s; display: flex; align-items: center; gap: 6px;
-  }
-  .btn:hover { border-color: var(--border2); color: var(--text); }
-  .btn.btn-undo:hover { border-color: var(--blue); color: var(--blue); }
-  .btn.btn-reset:hover { border-color: var(--red); color: var(--red); }
-  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn:disabled:hover { border-color: var(--border); color: var(--dim); }
+/* ── MONTH NAV ── */
+.month-nav {
+  display: flex; align-items: center; gap: 0.75rem; justify-content: center;
+  padding: 0.65rem 1rem; border-bottom: 1px solid var(--border);
+}
+.nav-btn {
+  background: var(--surface); border: 1px solid var(--border); color: var(--dim);
+  padding: 0.35rem 0.75rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+  font-family: inherit; transition: all 0.15s;
+}
+.nav-btn:hover { border-color: var(--border2); color: var(--text); }
+.month-label { font-size: 0.95rem; font-weight: 600; min-width: 140px; text-align: center; }
 
-  /* LAYOUT */
-  .main-layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; }
-  @media (max-width: 1100px) { .main-layout { grid-template-columns: 1fr; } }
+/* ── STATUS BAR ── */
+.status-bar {
+  margin: 0.75rem 1rem 0; padding: 0.65rem 1rem; border-radius: 8px;
+  font-size: 0.82rem; display: none; align-items: center; gap: 0.5rem;
+}
+.status-bar.show { display: flex; }
+.status-bar.info  { background: rgba(136,192,208,0.1); border: 1px solid rgba(136,192,208,0.3); color: var(--teal); }
+.status-bar.ok    { background: rgba(163,190,140,0.1); border: 1px solid rgba(163,190,140,0.3); color: var(--green); }
+.status-bar.warn  { background: rgba(240,198,116,0.1); border: 1px solid rgba(240,198,116,0.3); color: var(--gold); }
+.status-bar.error { background: rgba(191,97,106,0.1);  border: 1px solid rgba(191,97,106,0.3);  color: var(--red); }
+.status-bar .dismiss {
+  margin-left: auto; background: none; border: none; color: inherit; cursor: pointer;
+  font-size: 0.9rem; opacity: 0.6; font-family: inherit; padding: 0;
+}
 
-  /* WEEK META */
-  .week-meta {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
-    display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
-  }
-  .week-meta-item { font-size: 0.8rem; color: var(--dim); }
-  .week-meta-item strong { color: var(--gold); }
+/* ── MAIN GRID ── */
+main { padding: 0.75rem 0.75rem 2rem; max-width: 900px; margin: 0 auto; }
 
-  /* CALENDAR TABLE */
-  .calendar-wrap { overflow-x: auto; }
-  .calendar {
-    width: 100%; border-collapse: separate; border-spacing: 0;
-    background: var(--surface); border-radius: 10px;
-    border: 1px solid var(--border); overflow: hidden; margin-bottom: 16px;
-  }
-  .calendar th {
-    background: var(--surface2); color: var(--dim);
-    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px;
-    padding: 10px 6px; text-align: center; font-weight: 600; white-space: nowrap;
-  }
-  .calendar th.day-hdr { min-width: 118px; }
-  .calendar th.day-hdr.weekend { background: rgba(240,198,116,0.07); }
-  .day-label { font-size: 0.9rem; font-weight: 700; color: var(--text); display: block; }
-  .date-label { font-size: 0.68rem; color: var(--dim); display: block; margin-top: 1px; }
-  .shift-label { display: block; font-size: 0.7rem; color: var(--dim); }
-  .shift-time  { display: block; font-size: 0.65rem; color: var(--border2); }
+.loading, .load-error {
+  text-align: center; padding: 3rem; font-size: 0.9rem; color: var(--dim);
+}
+.load-error { color: var(--red); }
 
-  .calendar td {
-    padding: 6px 4px; border-bottom: 1px solid rgba(45,49,72,0.5);
-    border-right: 1px solid rgba(45,49,72,0.4); vertical-align: middle;
-    position: relative;
-  }
-  .calendar tr:last-child td { border-bottom: none; }
-  .calendar td:last-child { border-right: none; }
+/* day-of-week header row */
+.cal-header {
+  display: grid;
+  grid-template-columns: 56px repeat(7, 1fr);
+  gap: 2px; margin-bottom: 2px;
+}
+.cal-header-cell {
+  background: var(--surface2); padding: 0.4rem 0.2rem;
+  text-align: center; font-size: 0.68rem; font-weight: 600;
+  color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em;
+  border-radius: 4px;
+}
+.cal-header-cell.weekend { color: var(--amber); }
 
-  .shift-type-cell {
-    background: var(--surface2); padding: 8px 10px; font-size: 0.75rem;
-    font-weight: 600; white-space: nowrap; border-right: 2px solid var(--border) !important;
-  }
-  .s1-row .shift-type-cell { color: var(--gold); }
-  .s2-row .shift-type-cell { color: var(--purple); }
+/* week row */
+.week-row {
+  display: grid; grid-template-columns: 56px repeat(7, 1fr);
+  gap: 2px; margin-bottom: 2px;
+}
+.week-label-cell {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.62rem; font-weight: 700; color: var(--dim); letter-spacing: 0.03em;
+  background: var(--surface); border-radius: 4px;
+}
 
-  .calendar td.weekend-col { background: rgba(240,198,116,0.025); }
-  .calendar td.double-col  { background: rgba(136,192,208,0.04); border-bottom-color: rgba(136,192,208,0.15) !important; }
+/* day cell */
+.day-cell {
+  background: var(--surface); border-radius: 4px;
+  min-height: 58px; padding: 3px; position: relative;
+  border: 1px solid transparent; transition: border-color 0.15s;
+}
+.day-cell.today-col { border-color: rgba(240,198,116,0.3); }
+.day-cell.weekend { background: rgba(240,198,116,0.03); }
 
-  /* SHIFT CELLS */
-  .shift-cell { padding: 5px !important; min-height: 52px !important; vertical-align: top !important; }
-  .cell-inner { display: flex; flex-wrap: wrap; gap: 4px; min-height: 40px; align-content: flex-start; padding: 2px; position: relative; }
+.day-date {
+  font-size: 0.6rem; color: var(--dim); text-align: right;
+  padding: 1px 2px 2px; line-height: 1;
+}
+.day-cell.today-col .day-date { color: var(--gold); font-weight: 700; }
 
-  /* NAME TAGS */
-  .name-tag {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 3px 8px; border-radius: 5px; font-size: 0.76rem; font-weight: 600;
-    cursor: pointer; transition: all 0.15s; border: 1.5px solid transparent;
-    user-select: none; white-space: nowrap;
-  }
-  .name-tag:hover { filter: brightness(1.2); transform: scale(1.04); }
-  .name-tag.selected {
-    border-color: var(--teal) !important;
-    box-shadow: 0 0 0 2px rgba(136,192,208,0.3);
-    filter: brightness(1.3);
-  }
-  .name-tag.swap-candidate {
-    border-color: var(--gold) !important;
-    box-shadow: 0 0 0 2px rgba(240,198,116,0.25);
-    animation: pulse-gold 1.2s ease-in-out infinite;
-  }
-  @keyframes pulse-gold {
-    0%,100% { box-shadow: 0 0 0 2px rgba(240,198,116,0.25); }
-    50%      { box-shadow: 0 0 0 5px rgba(240,198,116,0.35); }
-  }
+.shifts-in-cell { display: flex; flex-direction: column; gap: 2px; }
 
-  /* Person colours */
-  .p-max    { background: rgba(240,198,116,0.18); color: var(--gold);   border-color: rgba(240,198,116,0.28); }
-  .p-huda   { background: rgba(180,142,173,0.18); color: var(--purple); border-color: rgba(180,142,173,0.28); }
-  .p-marcus { background: rgba(129,161,193,0.18); color: var(--blue);   border-color: rgba(129,161,193,0.28); }
-  .p-elisa  { background: rgba(163,190,140,0.18); color: var(--green);  border-color: rgba(163,190,140,0.28); }
-  .p-g      { background: rgba(208,135,112,0.18); color: var(--orange); border-color: rgba(208,135,112,0.28); }
+/* shift pill inside a day cell */
+.shift-pill {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 5px; border-radius: 4px; font-size: 0.68rem; font-weight: 600;
+  cursor: default; border: 1.5px solid transparent; transition: all 0.13s;
+  user-select: none; gap: 3px;
+}
+.shift-pill.clickable { cursor: pointer; }
+.shift-pill.clickable:hover { filter: brightness(1.2); transform: scale(1.02); }
 
-  /* Badges */
-  .double-badge {
-    position: absolute; top: 2px; right: 2px;
-    font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 4px;
-    pointer-events: none;
-    background: rgba(136,192,208,0.15); color: var(--teal);
-    border: 1px solid rgba(136,192,208,0.3);
-  }
-  .low-badge {
-    position: absolute; top: 2px; right: 2px;
-    font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 4px;
-    pointer-events: none;
-    background: rgba(191,97,106,0.15); color: var(--red);
-    border: 1px solid rgba(191,97,106,0.3);
-  }
+/* shift type tints */
+.type-S1     { background: rgba(163,190,140,0.15); color: var(--green);  border-color: rgba(163,190,140,0.2); }
+.type-S2     { background: rgba(180,142,173,0.15); color: var(--purple); border-color: rgba(180,142,173,0.2); }
+.type-S3     { background: rgba(180,142,173,0.15); color: var(--purple); border-color: rgba(180,142,173,0.2); }
+.type-S4     { background: rgba(129,161,193,0.15); color: var(--blue);   border-color: rgba(129,161,193,0.2); }
+.type-Sunday { background: rgba(235,203,139,0.15); color: var(--amber);  border-color: rgba(235,203,139,0.2); }
 
-  /* OFF ROW */
-  .off-row-label {
-    background: var(--surface2); padding: 6px 10px; font-size: 0.7rem;
-    font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;
-    border-right: 2px solid var(--border) !important; white-space: nowrap;
-  }
-  .off-cell { padding: 5px 4px !important; font-size: 0.75rem; }
-  .off-tag {
-    display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px;
-    border-radius: 4px; font-size: 0.72rem; font-weight: 500;
-    font-style: italic; background: rgba(45,49,72,0.5); color: var(--dim);
-  }
+/* person dot inside pill */
+.pill-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
-  /* SWAP MESSAGE */
-  .swap-msg {
-    padding: 10px 16px; border-radius: 8px; margin-bottom: 14px;
-    font-size: 0.83rem; display: none; align-items: center; gap: 8px;
-  }
-  .swap-msg.show { display: flex; }
-  .swap-msg.info    { background: rgba(129,161,193,0.1); border: 1px solid rgba(129,161,193,0.3); color: var(--blue); }
-  .swap-msg.success { background: rgba(163,190,140,0.1); border: 1px solid rgba(163,190,140,0.3); color: var(--green); }
-  .swap-msg.warn    { background: rgba(240,198,116,0.1); border: 1px solid rgba(240,198,116,0.3); color: var(--gold); }
-  .swap-msg.error   { background: rgba(191,97,106,0.1);  border: 1px solid rgba(191,97,106,0.3);  color: var(--red); }
+/* selected + swap candidate states */
+.shift-pill.selected {
+  border-color: var(--teal) !important;
+  box-shadow: 0 0 0 2px rgba(136,192,208,0.35);
+  filter: brightness(1.3);
+}
+.shift-pill.swap-candidate {
+  border-color: var(--gold) !important;
+  box-shadow: 0 0 0 2px rgba(240,198,116,0.25);
+  animation: pulse-gold 1.3s ease-in-out infinite;
+}
+@keyframes pulse-gold {
+  0%,100% { box-shadow: 0 0 0 2px rgba(240,198,116,0.2); }
+  50%      { box-shadow: 0 0 0 5px rgba(240,198,116,0.35); }
+}
 
-  /* LEGEND */
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; font-size: 0.77rem; }
-  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--dim); }
-  .legend-dot    { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-  .legend-swatch { width: 14px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+/* empty cell placeholder */
+.no-shifts { color: var(--border2); font-size: 0.55rem; text-align: center; padding-top: 6px; }
 
-  /* SIDEBAR */
-  .sidebar { display: flex; flex-direction: column; gap: 16px; }
-  .panel {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px;
-  }
-  .panel-title {
-    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px;
-    color: var(--dim); font-weight: 600; margin-bottom: 12px;
-  }
+/* ── LEGEND ── */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; margin-top: 1rem;
+  padding: 0.75rem 1rem; background: var(--surface); border-radius: 8px;
+  font-size: 0.72rem; color: var(--dim);
+}
+.legend-item { display: flex; align-items: center; gap: 0.35rem; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-  /* SUMMARY TABLE */
-  .summary-table { width: 100%; border-collapse: collapse; }
-  .summary-table th {
-    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--dim); font-weight: 500; padding: 4px 6px;
-    border-bottom: 1px solid var(--border); text-align: center;
-  }
-  .summary-table th:first-child { text-align: left; }
-  .summary-table td {
-    padding: 6px 6px; font-size: 0.8rem; text-align: center;
-    border-bottom: 1px solid rgba(45,49,72,0.4);
-  }
-  .summary-table td:first-child { text-align: left; }
-  .summary-table tr:last-child td { border-bottom: none; }
-  .person-cell { display: flex; align-items: center; gap: 7px; }
-  .person-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .bal-good { color: var(--green); font-weight: 600; }
-  .bal-warn { color: var(--gold);  font-weight: 600; }
-  .bal-bad  { color: var(--red);   font-weight: 600; }
-  .wknd-chip {
-    font-size: 0.65rem; padding: 1px 5px; border-radius: 3px;
-    background: rgba(240,198,116,0.12); color: var(--gold);
-    border: 1px solid rgba(240,198,116,0.25);
-  }
+/* ── PENDING SWAPS ── */
+.pending-section {
+  margin-top: 1.25rem; padding: 0.75rem 1rem; background: var(--surface);
+  border-radius: 8px; border: 1px solid var(--border);
+}
+.pending-title {
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--dim); font-weight: 600; margin-bottom: 0.6rem;
+}
+.pending-item {
+  padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+  font-size: 0.78rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+}
+.pending-item:last-child { border-bottom: none; }
+.pending-badge {
+  font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; font-weight: 600;
+  background: rgba(235,203,139,0.15); color: var(--amber); border: 1px solid rgba(235,203,139,0.3);
+}
+.empty-pending { color: var(--dim); font-size: 0.78rem; font-style: italic; }
 
-  /* COVERAGE GRID */
-  .cov-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; }
-  .cov-day  { text-align: center; border-radius: 5px; overflow: hidden; }
-  .cov-day-lbl { font-size: 0.68rem; font-weight: 600; color: var(--dim); padding: 4px 2px 2px; text-align: center; }
-  .cov-row { font-size: 0.65rem; font-weight: 700; padding: 3px 2px; text-align: center; }
-  .cov-ok   { background: rgba(163,190,140,0.15); color: var(--green); }
-  .cov-high { background: rgba(136,192,208,0.15); color: var(--teal);  }
-  .cov-low  { background: rgba(191,97,106,0.15);  color: var(--red);   }
+/* ── CONFIRM DIALOG ── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: none; align-items: center; justify-content: center;
+  z-index: 100; padding: 1rem;
+}
+.overlay.show { display: flex; }
+.dialog {
+  background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 12px; padding: 1.5rem; max-width: 420px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.dialog h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.dialog .swap-desc {
+  font-size: 0.82rem; color: var(--dim); margin-bottom: 1.25rem; line-height: 1.5;
+}
+.dialog .swap-desc strong { color: var(--text); }
+.dialog-actions { display: flex; gap: 0.75rem; justify-content: flex-end; }
+.dialog-btn {
+  padding: 0.55rem 1.25rem; border-radius: 7px; font-size: 0.85rem;
+  cursor: pointer; font-family: inherit; transition: all 0.15s; border: 1px solid;
+}
+.dialog-btn.cancel {
+  background: var(--surface2); border-color: var(--border2); color: var(--dim);
+}
+.dialog-btn.cancel:hover { color: var(--text); }
+.dialog-btn.confirm {
+  background: rgba(136,192,208,0.15); border-color: var(--teal); color: var(--teal);
+}
+.dialog-btn.confirm:hover { background: rgba(136,192,208,0.25); }
+.dialog-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* VIOLATIONS */
-  .viol-list { list-style: none; }
-  .viol-list li {
-    padding: 5px 0 5px 16px; position: relative; font-size: 0.79rem;
-    color: var(--dim); border-bottom: 1px solid rgba(45,49,72,0.4);
-  }
-  .viol-list li:last-child { border-bottom: none; }
-  .viol-list li::before { content:'!'; position:absolute; left:0; color:var(--red); font-weight:700; }
-  .viol-all-ok { color: var(--green); font-size: 0.82rem; font-style: italic; }
-
-  .hint { font-size: 0.77rem; color: var(--dim); margin-bottom: 12px; font-style: italic; }
-
-  @media (max-width: 768px) {
-    body { padding: 12px; }
-    .header { flex-direction: column; align-items: flex-start; }
-    .main-layout { grid-template-columns: 1fr; }
-  }
+/* ── RESPONSIVE ── */
+@media (max-width: 600px) {
+  .cal-header { grid-template-columns: 36px repeat(7, 1fr); }
+  .week-row    { grid-template-columns: 36px repeat(7, 1fr); }
+  .week-label-cell { font-size: 0.55rem; }
+  .day-cell { min-height: 50px; padding: 2px; }
+  .shift-pill { font-size: 0.62rem; padding: 2px 3px; }
+  .pill-dot { display: none; }
+  .pill-name { font-size: 0.62rem; }
+  .header-title { font-size: 1.1rem; }
+  .dialog { padding: 1.1rem; }
+}
 </style>
 </head>
 <body>
 
+<!-- ── HEADER ─────────────────────────────────────────────────── -->
 <div class="header">
-  <div class="header-left">
-    <div>
-      <h1><span>SBH</span> Roster Planner</h1>
-      <div class="subtitle">5-Week Rotation · 5 Staff · 6 Shifts / Week Each · 7h per shift</div>
-    </div>
-    <div class="week-tabs">
-      <button class="week-btn active" onclick="setWeek(0)">W1</button>
-      <button class="week-btn" onclick="setWeek(1)">W2</button>
-      <button class="week-btn" onclick="setWeek(2)">W3</button>
-      <button class="week-btn" onclick="setWeek(3)">W4</button>
-      <button class="week-btn" onclick="setWeek(4)">W5</button>
-    </div>
-  </div>
-  <div class="actions">
-    <button class="btn btn-undo" id="undoBtn" onclick="undoSwap()" disabled>↩ Undo</button>
-    <button class="btn btn-reset" onclick="resetSwaps()">Reset All</button>
-  </div>
-</div>
-
-<div class="swap-msg" id="swapMsg"></div>
-
-<div class="main-layout">
   <div>
-    <div id="weekMeta" class="week-meta"></div>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-dot" style="background:var(--gold)"></div>Max</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div>Huda</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Marcus</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Elisa</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>G</div>
-      <div class="legend-item" style="margin-left:4px">★ Fixed S2 night</div>
-      <div class="legend-item">☆ Random S2 night</div>
-    </div>
-    <p class="hint">Click a name to select, then click another name to swap — same day or different day. Cross-day swaps exchange days between two people.</p>
-    <div class="calendar-wrap">
-      <table class="calendar" id="calTable"></table>
-    </div>
+    <div class="header-title">SBH ROSTER</div>
+    <div class="header-sub">Shift view &amp; swap requests</div>
   </div>
-  <div class="sidebar">
-    <div class="panel">
-      <div class="panel-title">Weekly Summary</div>
-      <table class="summary-table" id="summaryTable"></table>
-    </div>
-    <div class="panel">
-      <div class="panel-title">Daily Coverage</div>
-      <div class="cov-grid" id="covGrid"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">Validation</div>
-      <div id="violPanel"></div>
+  <div class="pin-section">
+    <input class="pin-input" id="pinInput" type="password" maxlength="4" placeholder="PIN" autocomplete="off">
+    <button class="pin-btn" id="pinBtn">Log in</button>
+    <div class="logged-badge" id="loggedBadge">
+      <span id="loggedName"></span>
+      <button class="logout-btn" id="logoutBtn" title="Log out">✕</button>
     </div>
   </div>
 </div>
 
+<!-- ── MONTH NAV ───────────────────────────────────────────────── -->
+<div class="month-nav">
+  <button class="nav-btn" id="prevBtn">&#8592;</button>
+  <div class="month-label" id="monthLabel"></div>
+  <button class="nav-btn" id="nextBtn">&#8594;</button>
+</div>
+
+<!-- ── STATUS BAR ──────────────────────────────────────────────── -->
+<div class="status-bar" id="statusBar">
+  <span id="statusText"></span>
+  <button class="dismiss" id="statusDismiss">✕</button>
+</div>
+
+<!-- ── MAIN CONTENT ─────────────────────────────────────────────── -->
+<main>
+  <div id="calContainer"><div class="loading">Loading roster…</div></div>
+
+  <div class="legend" id="legendRow"></div>
+
+  <div class="pending-section" id="pendingSection" style="display:none">
+    <div class="pending-title">Pending Swap Requests</div>
+    <div id="pendingList"></div>
+  </div>
+</main>
+
+<!-- ── CONFIRM DIALOG ───────────────────────────────────────────── -->
+<div class="overlay" id="overlay">
+  <div class="dialog">
+    <h3>Confirm Swap Request</h3>
+    <div class="swap-desc" id="dialogDesc"></div>
+    <div class="dialog-actions">
+      <button class="dialog-btn cancel" id="cancelBtn">Cancel</button>
+      <button class="dialog-btn confirm" id="confirmBtn">Send Request</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// ═══════════════════════════════════════════════════════════
-// CONSTANTS
-// ═══════════════════════════════════════════════════════════
-const STAFF = ['Max','Huda','Marcus','Elisa','G'];
-const DAYS  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+// ═══════════════════════════════════════════════════════════════════════
+// CONFIG — fill in your anon key (Supabase → Settings → API → anon public)
+// ═══════════════════════════════════════════════════════════════════════
+const SUPABASE_URL = 'https://geheirnfbhqnhrjmrrax.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdlaGVpcm5mYmhxbmhyam1ycmF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3NjQ2MzEsImV4cCI6MjA5MTM0MDYzMX0.vSlZoPo0nhHRMPARJZHZWyuWFyY2pb4Ck3YzwEjVslQ';
+// ═══════════════════════════════════════════════════════════════════════
 
-const PC = {
-  Max:    { cls:'p-max',    hex:'#f0c674' },
-  Huda:   { cls:'p-huda',   hex:'#b48ead' },
-  Marcus: { cls:'p-marcus', hex:'#81a1c1' },
-  Elisa:  { cls:'p-elisa',  hex:'#a3be8c' },
-  G:      { cls:'p-g',      hex:'#d08770' },
+const STAFF_COLORS = {
+  'Max':    '#F0C674',
+  'Huda':   '#B48EAD',
+  'Rui En': '#81A1C1',
+  'Elisa':  '#A3BE8C',
 };
+const STAFF_ORDER = ['Max', 'Huda', 'Rui En', 'Elisa'];
 
-// Weekend off rotation
-const WKND_OFF = [
-  { Sat:'Max',    Sun:'Huda'   },
-  { Sat:'Huda',   Sun:'Marcus' },
-  { Sat:'Marcus', Sun:'Elisa'  },
-  { Sat:'Elisa',  Sun:'G'      },
-  { Sat:'G',      Sun:'Max'    },
-];
+const SHIFT_DEFS = {
+  'S1':     { label: 'Shift 1', time: '7:00–15:00',  min: 1 },
+  'S2':     { label: 'Shift 2', time: '14:00–22:00', min: 1 },
+  'S3':     { label: 'Shift 3', time: '13:30–21:30', min: 2 },
+  'S4':     { label: 'Shift 4', time: '9:00–17:00',  min: 1 },
+  'Sunday': { label: 'Sunday',  time: '10:00–18:00', min: 1 },
+};
+// Evening shifts — need ≥2 coverage after a swap
+const EVENING_TYPES = new Set(['S2', 'S3']);
 
-// Weekday offs (the 3 people not on weekend)
-const WKDAY_OFF = [
-  { Marcus:'Mon', Elisa:'Wed', G:'Thu'    },  // W1
-  { Elisa:'Mon',  G:'Wed',     Max:'Thu'  },  // W2
-  { Huda:'Mon',   G:'Wed',     Max:'Thu'  },  // W3
-  { Huda:'Mon',   Marcus:'Wed',Max:'Thu'  },  // W4
-  { Elisa:'Mon',  Marcus:'Wed',Huda:'Thu' },  // W5
-];
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Max's S2 days per week (Mon+Tue always fixed ★, last one random ☆)
-const MAX_S2 = [
-  ['Mon','Tue','Thu'],  // W1: ★Mon ★Tue ☆Thu
-  ['Mon','Tue','Fri'],  // W2: ★Mon ★Tue ☆Fri
-  ['Mon','Tue','Fri'],  // W3: ★Mon ★Tue ☆Fri
-  ['Mon','Tue','Fri'],  // W4: ★Mon ★Tue ☆Fri
-  ['Mon','Tue','Fri'],  // W5: ★Mon ★Tue ☆Fri
-];
-const MAX_FIXED = ['Mon','Tue']; // always ★
+// ── State ──────────────────────────────────────────────────────────────
+let monthOffset = 0;   // 0 = current month
+let myName = null;     // logged-in staff name
+let myPin  = null;     // stored in sessionStorage for RPC call
+let allShifts = [];    // raw shifts from DB for visible month
+let selection = null;  // { shiftId, staffName, shiftType, shiftDate, startTime, endTime }
 
-// ═══════════════════════════════════════════════════════════
-// VERIFIED SCHEDULE DATA (all 5 weeks, constraint-checked)
-// ═══════════════════════════════════════════════════════════
-//
-// Constraints satisfied per week:
-//  - Every person: exactly 3×S1 + 3×S2 = 6 shifts = 42h
-//  - Every shift: min 2 staff
-//  - Max on S2 Mon★ and Tue★ every week
-//  - 2 double-booking days (Tue S1 + Fri S2) each week
-//  - Each person: exactly 1 day off
-//
-const BASE_WEEKS = [
-  // ── W1 ── offs: Marcus=Mon, Elisa=Wed, G=Thu, Max=Sat, Huda=Sun
-  {
-    Mon: { S1:['Huda','G'],           S2:['Max','Elisa']         },
-    Tue: { S1:['Marcus','Elisa','G'], S2:['Max','Huda']          },
-    Wed: { S1:['Max','Marcus'],       S2:['Huda','G']            },
-    Thu: { S1:['Huda','Elisa'],       S2:['Max','Marcus']        },
-    Fri: { S1:['Max','Elisa'],        S2:['Huda','Marcus','G']   },
-    Sat: { S1:['Huda','Marcus'],      S2:['Elisa','G']           },
-    Sun: { S1:['Max','G'],            S2:['Marcus','Elisa']      },
-  },
-  // ── W2 ── offs: Elisa=Mon, G=Wed, Max=Thu, Huda=Sat, Marcus=Sun
-  {
-    Mon: { S1:['Huda','Marcus'],      S2:['Max','G']             },
-    Tue: { S1:['Huda','Marcus','Elisa'], S2:['Max','G']          },
-    Wed: { S1:['Max','Huda'],         S2:['Marcus','Elisa']      },
-    Thu: { S1:['Marcus','Elisa'],     S2:['Huda','G']            },
-    Fri: { S1:['Elisa','G'],          S2:['Max','Huda','Marcus'] },
-    Sat: { S1:['Max','G'],            S2:['Marcus','Elisa']      },
-    Sun: { S1:['Max','G'],            S2:['Huda','Elisa']        },
-  },
-  // ── W3 ── offs: Huda=Mon, G=Wed, Max=Thu, Marcus=Sat, Elisa=Sun
-  {
-    Mon: { S1:['Marcus','Elisa'],     S2:['Max','G']             },
-    Tue: { S1:['Huda','Elisa','G'],   S2:['Max','Marcus']        },
-    Wed: { S1:['Max','Marcus'],       S2:['Huda','Elisa']        },
-    Thu: { S1:['Huda','G'],           S2:['Marcus','Elisa']      },
-    Fri: { S1:['Huda','Marcus'],      S2:['Max','Elisa','G']     },
-    Sat: { S1:['Max','Elisa'],        S2:['Huda','G']            },
-    Sun: { S1:['Max','G'],            S2:['Huda','Marcus']       },
-  },
-  // ── W4 ── offs: Huda=Mon, Marcus=Wed, Max=Thu, Elisa=Sat, G=Sun
-  {
-    Mon: { S1:['Marcus','Elisa'],     S2:['Max','G']             },
-    Tue: { S1:['Huda','Elisa','G'],   S2:['Max','Marcus']        },
-    Wed: { S1:['Max','G'],            S2:['Huda','Elisa']        },
-    Thu: { S1:['Huda','G'],           S2:['Marcus','Elisa']      },
-    Fri: { S1:['Huda','Marcus'],      S2:['Max','Elisa','G']     },
-    Sat: { S1:['Max','Marcus'],       S2:['Huda','G']            },
-    Sun: { S1:['Max','Elisa'],        S2:['Huda','Marcus']       },
-  },
-  // ── W5 ── offs: Elisa=Mon, Marcus=Wed, Huda=Thu, G=Sat, Max=Sun
-  {
-    Mon: { S1:['Huda','Marcus'],      S2:['Max','G']             },
-    Tue: { S1:['Huda','Marcus','G'],  S2:['Max','Elisa']         },
-    Wed: { S1:['Max','Huda'],         S2:['Elisa','G']           },
-    Thu: { S1:['Max','Marcus'],       S2:['Elisa','G']           },
-    Fri: { S1:['Elisa','G'],          S2:['Max','Huda','Marcus'] },
-    Sat: { S1:['Max','Elisa'],        S2:['Huda','Marcus']       },
-    Sun: { S1:['Elisa','G'],          S2:['Huda','Marcus']       },
-  },
-];
-
-// ═══════════════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════════════
-let liveWeeks   = BASE_WEEKS.map(w => deepCopy(w));
-let swapHistory = [];     // [{ weekIdx, snapshot }]
-let currentWeek = 0;
-let selection   = null;   // { person, day, shift, weekIdx }
-let msgTimer    = null;
-
-function deepCopy(o) { return JSON.parse(JSON.stringify(o)); }
-
-// ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
-function getOffs(wi) {
-  // Returns { personName: dayName }
-  const o = {};
-  const wo = WKND_OFF[wi];
-  o[wo.Sat] = 'Sat';
-  o[wo.Sun] = 'Sun';
-  for (const [p, d] of Object.entries(WKDAY_OFF[wi])) o[p] = d;
-  return o;
+// ── Supabase session (sessionStorage) ─────────────────────────────────
+function restoreSession() {
+  try {
+    myName = sessionStorage.getItem('sbh_name') || null;
+    myPin  = sessionStorage.getItem('sbh_pin')  || null;
+  } catch(_) {}
+}
+function saveSession(name, pin) {
+  try {
+    sessionStorage.setItem('sbh_name', name);
+    sessionStorage.setItem('sbh_pin',  pin);
+  } catch(_) {}
+}
+function clearSession() {
+  myName = null; myPin = null;
+  try { sessionStorage.removeItem('sbh_name'); sessionStorage.removeItem('sbh_pin'); } catch(_) {}
 }
 
-function getOffDay(wi, person) { return getOffs(wi)[person] || null; }
-
-// Returns '★' | '☆' | '' for Max on a given shift slot
-function maxMarker(wi, day, shift) {
-  if (shift !== 'S2') return '';
-  const s2days = MAX_S2[wi];
-  if (!s2days.includes(day)) return '';
-  return MAX_FIXED.includes(day) ? '★' : '☆';
+// ── Date helpers ────────────────────────────────────────────────────────
+function getMonthBounds(offset) {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset);
+  d.setHours(0, 0, 0, 0);
+  const start = new Date(d);
+  const end   = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return { start, end, year: d.getFullYear(), month: d.getMonth() };
 }
 
-// ═══════════════════════════════════════════════════════════
-// RENDER
-// ═══════════════════════════════════════════════════════════
-function render() {
-  renderMeta();
+function fmt(d)     { return d.toISOString().slice(0, 10); }
+function todayStr() { return fmt(new Date()); }
+
+function monthName(m, y) {
+  return new Date(y, m, 1).toLocaleString('en', { month: 'long', year: 'numeric' });
+}
+
+// Get Mon–Sun weeks that cover the month
+function getWeeksForMonth(year, month) {
+  const weeks = [];
+  // First Monday on or before the 1st
+  const first = new Date(year, month, 1);
+  const dow   = first.getDay(); // 0=Sun
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  let monday = new Date(year, month, 1 + mondayOffset);
+
+  while (true) {
+    const week = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      week.push(d);
+    }
+    weeks.push(week);
+    // Stop when Monday is past the last day of the month
+    const next = new Date(monday);
+    next.setDate(next.getDate() + 7);
+    if (next.getMonth() !== month && next > new Date(year, month + 1, 0)) break;
+    monday = next;
+    if (monday.getMonth() > month && monday.getFullYear() >= year) break;
+  }
+  return weeks;
+}
+
+// ── Status bar ──────────────────────────────────────────────────────────
+function showStatus(msg, type = 'info', autoDismiss = 0) {
+  const bar  = document.getElementById('statusBar');
+  const text = document.getElementById('statusText');
+  bar.className = `status-bar show ${type}`;
+  text.textContent = msg;
+  if (autoDismiss > 0) setTimeout(() => bar.classList.remove('show'), autoDismiss);
+}
+function hideStatus() { document.getElementById('statusBar').classList.remove('show'); }
+
+// ── Auth UI ─────────────────────────────────────────────────────────────
+function updateAuthUI() {
+  const badge    = document.getElementById('loggedBadge');
+  const nameEl   = document.getElementById('loggedName');
+  const pinInput = document.getElementById('pinInput');
+  const pinBtn   = document.getElementById('pinBtn');
+  if (myName) {
+    badge.style.display = 'flex';
+    nameEl.textContent = `✓ ${myName}`;
+    pinInput.style.display = 'none';
+    pinBtn.style.display   = 'none';
+  } else {
+    badge.style.display = 'none';
+    pinInput.style.display = '';
+    pinBtn.style.display   = '';
+  }
+}
+
+async function doLogin() {
+  const pin = document.getElementById('pinInput').value.trim();
+  if (!pin) return;
+  const { data, error } = await db.rpc('verify_pin', { p_pin: pin });
+  if (error || !data || data.length === 0) {
+    const el = document.getElementById('pinInput');
+    el.classList.add('error');
+    setTimeout(() => el.classList.remove('error'), 1500);
+    showStatus('Invalid PIN', 'error', 2500);
+    return;
+  }
+  myName = data[0].staff_name;
+  myPin  = pin;
+  saveSession(myName, pin);
+  updateAuthUI();
+  selection = null;
   renderCalendar();
-  renderSummary();
-  renderCoverage();
-  renderViolations();
-  document.getElementById('undoBtn').disabled = swapHistory.length === 0;
+  loadPending();
+  showStatus(`Logged in as ${myName}`, 'ok', 2000);
 }
 
-function renderMeta() {
-  const wi   = currentWeek;
-  const offs  = getOffs(wi);
-  const wo    = WKND_OFF[wi];
-  const wd    = WKDAY_OFF[wi];
-  const sched = liveWeeks[wi];
-  const doubles = DAYS.filter(d => sched[d].S1.length >= 3 || sched[d].S2.length >= 3);
-  const randomDay = MAX_S2[wi].find(d => !MAX_FIXED.includes(d));
-
-  document.getElementById('weekMeta').innerHTML =
-    `<div class="week-meta-item"><strong>Weekend off:</strong> ${wo.Sat} (Sat), ${wo.Sun} (Sun)</div>` +
-    `<div class="week-meta-item"><strong>Weekday offs:</strong> ` +
-      Object.entries(wd).map(([p,d]) => `${p} (${d})`).join(', ') + `</div>` +
-    `<div class="week-meta-item"><strong>Max ☆:</strong> ${randomDay}</div>` +
-    `<div class="week-meta-item"><strong>Double days:</strong> ${doubles.join(', ') || 'none'}</div>`;
+function doLogout() {
+  clearSession(); selection = null;
+  updateAuthUI();
+  renderCalendar();
+  loadPending();
+  hideStatus();
 }
 
-function renderCalendar() {
-  const wi    = currentWeek;
-  const sched = liveWeeks[wi];
-  const offs  = getOffs(wi);
-  // dayOff[day] = [people off that day]
-  const dayOff = {};
-  for (const [p, d] of Object.entries(offs)) {
-    if (!dayOff[d]) dayOff[d] = [];
-    dayOff[d].push(p);
+// ── Load roster ──────────────────────────────────────────────────────────
+async function loadRoster() {
+  const { start, end, year, month } = getMonthBounds(monthOffset);
+  document.getElementById('monthLabel').textContent = monthName(month, year);
+
+  const { data, error } = await db
+    .from('attendance_shifts')
+    .select('id, staff_id, shift_date, shift_type, start_time, end_time, attendance_staff(name)')
+    .gte('shift_date', fmt(start))
+    .lte('shift_date', fmt(end))
+    .order('shift_date')
+    .order('start_time');
+
+  if (error) {
+    document.getElementById('calContainer').innerHTML =
+      `<div class="load-error">Error loading roster: ${error.message}</div>`;
+    return;
   }
-
-  let h = '<thead><tr><th></th>';
-  for (const d of DAYS) {
-    const wk = d === 'Sat' || d === 'Sun';
-    h += `<th class="day-hdr${wk?' weekend':''}">
-      <span class="day-label">${d}</span>
-      <span class="date-label">${wk?'Weekend':'Weekday'}</span>
-    </th>`;
-  }
-  h += '</tr></thead><tbody>';
-
-  // S1 row
-  h += buildShiftRow(sched, dayOff, wi, 'S1', 'Morning', '7am–3pm');
-  // S2 row
-  h += buildShiftRow(sched, dayOff, wi, 'S2', 'Evening',  '2pm–10pm');
-
-  // Off row
-  h += '<tr><td class="off-row-label">Day Off</td>';
-  for (const d of DAYS) {
-    const wk = d === 'Sat' || d === 'Sun';
-    const people = dayOff[d] || [];
-    h += `<td class="off-cell${wk?' weekend-col':''}">`;
-    if (people.length) {
-      people.forEach(p => {
-        h += `<span class="off-tag" style="color:${PC[p].hex}">${p}</span> `;
-      });
-    } else {
-      h += `<span style="color:var(--border2);font-size:0.7rem">—</span>`;
-    }
-    h += '</td>';
-  }
-  h += '</tr></tbody>';
-
-  document.getElementById('calTable').innerHTML = h;
+  allShifts = data || [];
+  selection = null;
+  renderCalendar();
+  loadPending();
 }
 
-function buildShiftRow(sched, dayOff, wi, shift, label, time) {
-  const rowCls = shift === 'S1' ? 's1-row' : 's2-row';
-  let h = `<tr class="${rowCls}">`;
-  h += `<td class="shift-type-cell">
-    <span class="shift-label">${label}</span>
-    <span class="shift-time">${time}</span>
-  </td>`;
+// ── Pending swaps ────────────────────────────────────────────────────────
+async function loadPending() {
+  const section = document.getElementById('pendingSection');
+  const list    = document.getElementById('pendingList');
+  if (!myName) { section.style.display = 'none'; return; }
 
-  for (const d of DAYS) {
-    const people  = sched[d][shift];
-    const wk      = d === 'Sat' || d === 'Sun';
-    const isDouble = people.length >= 3;
-    const isLow    = people.length < 2;
+  // Get my staff_id first
+  const { data: meData } = await db
+    .from('attendance_staff')
+    .select('id')
+    .eq('name', myName)
+    .single();
+  if (!meData) return;
 
-    let tdCls = 'shift-cell';
-    if (wk)      tdCls += ' weekend-col';
-    /* double-col removed — count visible from names */
+  const myId = meData.id;
+  const { data: swaps } = await db
+    .from('swap_requests')
+    .select(`id, status, requested_at,
+      requester:requester_id(id, name),
+      target:target_id(id, name),
+      requester_shift:requester_shift_id(shift_date, shift_type, start_time),
+      target_shift:target_shift_id(shift_date, shift_type, start_time)`)
+    .or(`requester_id.eq.${myId},target_id.eq.${myId}`)
+    .eq('status', 'pending')
+    .order('requested_at', { ascending: false })
+    .limit(10);
 
-    h += `<td class="${tdCls}"><div class="cell-inner">`;
-    if (isLow)    h += `<span class="low-badge">LOW</span>`;
-
-    for (const person of people) {
-      const mk     = person === 'Max' ? maxMarker(wi, d, shift) : '';
-      const isSel  = selection && selection.person === person && selection.day === d && selection.shift === shift && selection.weekIdx === wi;
-      // Valid candidate: different person, and selected person is NOT on this same day+shift
-      const isCand = selection && selection.weekIdx === wi && person !== selection.person
-        && !people.includes(selection.person);
-      let cls = `name-tag ${PC[person].cls}`;
-      if (isSel)  cls += ' selected';
-      else if (isCand) cls += ' swap-candidate';
-
-      h += `<span class="${cls}" onclick="handleClick('${person}','${d}','${shift}')">${person}${mk}</span>`;
-    }
-    h += '</div></td>';
+  if (!swaps || swaps.length === 0) {
+    section.style.display = 'none';
+    return;
   }
-  return h + '</tr>';
-}
-
-function renderSummary() {
-  const wi    = currentWeek;
-  const sched = liveWeeks[wi];
-  const offs  = getOffs(wi);
-  const wo    = WKND_OFF[wi];
-
-  let h = `<thead><tr>
-    <th>Person</th><th>S1</th><th>S2</th><th>Shifts</th><th>Off</th>
-  </tr></thead><tbody>`;
-
-  for (const p of STAFF) {
-    let s1 = 0, s2 = 0;
-    for (const d of DAYS) {
-      if (sched[d].S1.includes(p)) s1++;
-      if (sched[d].S2.includes(p)) s2++;
-    }
-    const total = s1 + s2;
-    const hours = total * 7;
-    const offDay = offs[p] || '?';
-    const wkndOff = wo.Sat === p || wo.Sun === p;
-    const diff = Math.abs(s1 - s2);
-    const balCls = diff === 0 ? 'bal-good' : diff === 1 ? 'bal-warn' : 'bal-bad';
-
-    h += `<tr>
-      <td>
-        <div class="person-cell">
-          <div class="person-dot" style="background:${PC[p].hex}"></div>
-          ${p}
-          ${wkndOff ? '<span class="wknd-chip">wknd</span>' : ''}
-        </div>
-      </td>
-      <td class="${balCls}">${s1}</td>
-      <td class="${balCls}">${s2}</td>
-      <td>${total} <span style="color:var(--dim);font-size:0.7rem">(${hours}h)</span></td>
-      <td style="color:${PC[p].hex};font-size:0.78rem">${offDay}</td>
-    </tr>`;
-  }
-  document.getElementById('summaryTable').innerHTML = h + '</tbody>';
-}
-
-function renderCoverage() {
-  const wi    = currentWeek;
-  const sched = liveWeeks[wi];
-  let h = '';
-  for (const d of DAYS) {
-    const s1 = sched[d].S1.length;
-    const s2 = sched[d].S2.length;
-    const s1cls = s1 >= 3 ? 'cov-high' : s1 >= 2 ? 'cov-ok' : 'cov-low';
-    const s2cls = s2 >= 3 ? 'cov-high' : s2 >= 2 ? 'cov-ok' : 'cov-low';
-    h += `<div class="cov-day">
-      <div class="cov-day-lbl">${d}</div>
-      <div class="cov-row ${s1cls}">S1·${s1}</div>
-      <div class="cov-row ${s2cls}">S2·${s2}</div>
+  section.style.display = '';
+  let html = '';
+  for (const s of swaps) {
+    const rs = s.requester_shift;
+    const ts = s.target_shift;
+    const rsDate = rs ? fmtDate(rs.shift_date) : '?';
+    const tsDate = ts ? fmtDate(ts.shift_date) : '?';
+    const isRequester = s.requester && s.requester.id === myId;
+    const role = isRequester ? 'You requested' : 'Incoming from';
+    const other = isRequester ? (s.target?.name || '?') : (s.requester?.name || '?');
+    html += `<div class="pending-item">
+      <span class="pending-badge">pending</span>
+      <span>${role} <strong>${other}</strong>:
+        ${rs?.shift_type || '?'} on ${rsDate}
+        ↔ ${ts?.shift_type || '?'} on ${tsDate}
+      </span>
     </div>`;
   }
-  document.getElementById('covGrid').innerHTML = h;
+  list.innerHTML = html;
 }
 
-function renderViolations() {
-  const wi    = currentWeek;
-  const sched = liveWeeks[wi];
-  const issues = [];
+function fmtDate(dateStr) {
+  if (!dateStr) return '?';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en', { weekday: 'short', day: 'numeric', month: 'short' });
+}
 
-  // Min 2 per shift
-  for (const d of DAYS) {
-    for (const sh of ['S1','S2']) {
-      if (sched[d][sh].length < 2)
-        issues.push(`${d} ${sh}: only ${sched[d][sh].length} person (need ≥2)`);
-    }
+// ── Render calendar ────────────────────────────────────────────────────
+function renderCalendar() {
+  const { year, month } = getMonthBounds(monthOffset);
+  const weeks = getWeeksForMonth(year, month);
+  const today = todayStr();
+
+  // Build shift lookup: date → [shift, ...]
+  const byDate = {};
+  for (const s of allShifts) {
+    if (!byDate[s.shift_date]) byDate[s.shift_date] = [];
+    byDate[s.shift_date].push(s);
   }
 
-  // Max on S2 Mon + Tue
-  if (!sched.Mon.S2.includes('Max')) issues.push('Max missing from S2 Monday ★');
-  if (!sched.Tue.S2.includes('Max')) issues.push('Max missing from S2 Tuesday ★');
+  const DAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-  // Each person: 6 shifts, ≤44h
-  for (const p of STAFF) {
-    let cnt = 0;
-    for (const d of DAYS) {
-      if (sched[d].S1.includes(p)) cnt++;
-      if (sched[d].S2.includes(p)) cnt++;
+  let html = '';
+
+  // Header
+  html += '<div class="cal-header">';
+  html += '<div class="cal-header-cell"></div>';
+  for (let i = 0; i < 7; i++) {
+    const isWknd = i >= 5;
+    html += `<div class="cal-header-cell${isWknd ? ' weekend' : ''}">${DAYS_SHORT[i]}</div>`;
+  }
+  html += '</div>';
+
+  // Weeks
+  for (let wi = 0; wi < weeks.length; wi++) {
+    const week = weeks[wi];
+    html += `<div class="week-row">`;
+    html += `<div class="week-label-cell">W${wi + 1}</div>`;
+
+    for (let di = 0; di < 7; di++) {
+      const d = week[di];
+      const ds = fmt(d);
+      const inMonth = d.getMonth() === month;
+      const isToday = ds === today;
+      const isWknd  = di >= 5;
+      let cellClass = 'day-cell';
+      if (isToday)  cellClass += ' today-col';
+      if (isWknd)   cellClass += ' weekend';
+      if (!inMonth) cellClass += ' out-of-month';
+
+      const shifts = byDate[ds] || [];
+
+      html += `<div class="${cellClass}">`;
+      html += `<div class="day-date">${d.getDate()}</div>`;
+      html += `<div class="shifts-in-cell">`;
+
+      if (shifts.length === 0) {
+        if (inMonth) html += `<div class="no-shifts">—</div>`;
+      } else {
+        // Sort by start time
+        shifts.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+        for (const sh of shifts) {
+          const staffName = sh.attendance_staff?.name || '?';
+          const color  = STAFF_COLORS[staffName] || '#8b8fa3';
+          const isMe   = myName && staffName === myName;
+          const isSel  = selection && selection.shiftId === sh.id;
+          const isCand = selection && !isSel && canSwap(selection, sh);
+
+          let pillClass = `shift-pill type-${sh.shift_type.replace(/\s+/g, '')}`;
+          if (isMe || selection) pillClass += ' clickable';
+          if (isSel)             pillClass += ' selected';
+          else if (isCand)       pillClass += ' swap-candidate';
+
+          const onclick = (isMe && !isSel) || isCand || isSel
+            ? `onclick="handlePillClick('${sh.id}')"`
+            : '';
+
+          html += `<div class="${pillClass}" ${onclick}
+            data-shift-id="${sh.id}"
+            title="${staffName}: ${sh.shift_type} ${sh.start_time}–${sh.end_time}">
+            <span class="pill-dot" style="background:${color}"></span>
+            <span class="pill-name">${staffName}</span>
+          </div>`;
+        }
+      }
+
+      html += '</div></div>';
     }
-    if (cnt !== 6) issues.push(`${p}: ${cnt} shifts (expected 6)`);
-    if (cnt * 7 > 44) issues.push(`${p}: ${cnt * 7}h — exceeds 44h cap`);
+    html += '</div>';
   }
 
-  // Total slots = 30
-  let slots = 0;
-  for (const d of DAYS) slots += sched[d].S1.length + sched[d].S2.length;
-  if (slots !== 30) issues.push(`Total slots: ${slots} (expected 30 = 5×6)`);
+  document.getElementById('calContainer').innerHTML = html;
 
-  const el = document.getElementById('violPanel');
-  if (issues.length === 0) {
-    el.innerHTML = '<p class="viol-all-ok">✓ All constraints satisfied</p>';
+  // Render legend
+  renderLegend();
+}
+
+function renderLegend() {
+  let html = '';
+  for (const [name, color] of Object.entries(STAFF_COLORS)) {
+    const isMe = name === myName;
+    html += `<div class="legend-item">
+      <div class="legend-dot" style="background:${color}"></div>
+      <span style="${isMe ? `color:${color};font-weight:700` : ''}">${name}</span>
+    </div>`;
+  }
+  html += `<div class="legend-item" style="margin-left:auto;gap:0.5rem">
+    <span style="color:var(--teal)">■</span><span>selected</span>
+    <span style="color:var(--gold);margin-left:0.5rem">■</span><span>swap target</span>
+  </div>`;
+  document.getElementById('legendRow').innerHTML = html;
+}
+
+// ── Swap logic ────────────────────────────────────────────────────────
+// selection = { shiftId, staffName, shiftType, shiftDate, startTime, endTime }
+// candidate = raw shift row from allShifts
+
+function canSwap(sel, candidate) {
+  if (!sel || !myName) return false;
+  const candName = candidate.attendance_staff?.name;
+  if (!candName || candName === sel.staffName) return false;
+
+  // Must be different people
+  if (sel.staffName === candName) return false;
+
+  // Can't swap to a day you're already working
+  if (sel.shiftDate !== candidate.shift_date) {
+    // Check if myName (sel.staffName) already works on candidate's date
+    const myShiftsOnCandDate = allShifts.filter(
+      s => s.attendance_staff?.name === sel.staffName && s.shift_date === candidate.shift_date
+    );
+    if (myShiftsOnCandDate.length > 0) return false;
+
+    // Check if candidate's person already works on sel.shiftDate
+    const theirShiftsOnMyDate = allShifts.filter(
+      s => s.attendance_staff?.name === candName && s.shift_date === sel.shiftDate
+    );
+    if (theirShiftsOnMyDate.length > 0) return false;
   } else {
-    el.innerHTML = '<ul class="viol-list">' +
-      issues.map(i => `<li>${i}</li>`).join('') + '</ul>';
+    // Same day: can't swap same shift type (same slot)
+    if (sel.shiftType === candidate.shift_type) return false;
   }
+
+  // Evening coverage check: after swapping, evening shifts on both dates must still have ≥2
+  if (!eveningCoverageOk(sel, candidate)) return false;
+
+  // 7-day stretch check (simple: within visible allShifts)
+  if (!checkNoSevenDayStretch(sel.staffName, sel.shiftDate, candidate.shift_date)) return false;
+  if (!checkNoSevenDayStretch(candName,      candidate.shift_date, sel.shiftDate)) return false;
+
+  return true;
 }
 
-// ═══════════════════════════════════════════════════════════
-// SWAP LOGIC
-// ═══════════════════════════════════════════════════════════
-function handleClick(person, day, shift) {
-  const wi = currentWeek;
+function eveningCoverageOk(sel, candidate) {
+  // If either shift being swapped is an evening type, check coverage stays ≥2
+  const minEvening = 2;
 
+  // sel is going to candidate.shift_date (gaining candidate.shift_type)
+  // candidate person is going to sel.shiftDate (gaining sel.shiftType)
+
+  // Evening count on sel.shiftDate after swap:
+  if (EVENING_TYPES.has(sel.shiftType)) {
+    const countBefore = allShifts.filter(
+      s => s.shift_date === sel.shiftDate && EVENING_TYPES.has(s.shift_type)
+    ).length;
+    // sel person leaves; candidate person may or may not arrive with an evening type
+    const candBringsEvening = EVENING_TYPES.has(candidate.shift_type) ? 1 : 0;
+    const countAfter = countBefore - 1 + (EVENING_TYPES.has(sel.shiftType) ? 0 : 0) + candBringsEvening;
+    // Actually: sel removes their evening from sel.shiftDate, candidate adds their shift_type on sel.shiftDate
+    const afterCount = allShifts.filter(s =>
+      s.shift_date === sel.shiftDate &&
+      EVENING_TYPES.has(s.shift_type) &&
+      !(s.id === sel.shiftId)
+    ).length + (EVENING_TYPES.has(candidate.shift_type) ? 1 : 0);
+    if (afterCount < minEvening) return false;
+  }
+
+  if (EVENING_TYPES.has(candidate.shift_type)) {
+    const afterCount = allShifts.filter(s =>
+      s.shift_date === candidate.shift_date &&
+      EVENING_TYPES.has(s.shift_type) &&
+      !(s.id === candidate.id)
+    ).length + (EVENING_TYPES.has(sel.shiftType) ? 1 : 0);
+    if (afterCount < minEvening) return false;
+  }
+
+  return true;
+}
+
+function checkNoSevenDayStretch(staffName, removingDate, addingDate) {
+  // Get all dates this person works (within visible allShifts), simulate swap
+  const dates = allShifts
+    .filter(s => s.attendance_staff?.name === staffName)
+    .map(s => s.shift_date)
+    .filter(d => d !== removingDate);
+  dates.push(addingDate);
+  dates.sort();
+
+  // Check no 7 consecutive days
+  for (let i = 0; i <= dates.length - 7; i++) {
+    const first = new Date(dates[i]  + 'T00:00:00');
+    const last  = new Date(dates[i+6] + 'T00:00:00');
+    const diff  = (last - first) / 86400000;
+    if (diff === 6) return false; // 7 consecutive days
+  }
+  return true;
+}
+
+// ── Click handlers ─────────────────────────────────────────────────────
+function handlePillClick(shiftId) {
+  if (!myName) {
+    showStatus('Please log in to request swaps', 'warn', 3000);
+    return;
+  }
+
+  const shift = allShifts.find(s => s.id === shiftId);
+  if (!shift) return;
+
+  const staffName = shift.attendance_staff?.name;
+
+  // If clicking on own shift → select it (or deselect)
+  if (staffName === myName) {
+    if (selection && selection.shiftId === shiftId) {
+      // Deselect
+      selection = null;
+      hideStatus();
+    } else {
+      selection = {
+        shiftId:   shift.id,
+        staffName: staffName,
+        shiftType: shift.shift_type,
+        shiftDate: shift.shift_date,
+        startTime: shift.start_time,
+        endTime:   shift.end_time,
+      };
+      showStatus(`Selected your ${shift.shift_type} on ${fmtDate(shift.shift_date)} — now click a swap target`, 'info');
+    }
+    renderCalendar();
+    return;
+  }
+
+  // Clicking another person's shift
   if (!selection) {
-    selection = { person, day, shift, weekIdx: wi };
-    showMsg(`Selected ${person} on ${shift} ${day}. Click any highlighted name to swap.`, 'info');
-    render();
+    showStatus('Click one of your own shifts first', 'warn', 3000);
     return;
   }
 
-  // Switching week mid-select
-  if (selection.weekIdx !== wi) {
-    selection = { person, day, shift, weekIdx: wi };
-    showMsg(`Selected ${person} on ${shift} ${day}.`, 'info');
-    render();
+  // Validate
+  if (!canSwap(selection, shift)) {
+    showStatus('This swap is not allowed (coverage or schedule conflict)', 'error', 3500);
     return;
   }
 
-  // Clicking same person+day+shift — deselect
-  if (selection.person === person && selection.day === day && selection.shift === shift) {
-    selection = null;
-    showMsg('Selection cleared.', 'info');
-    render(); return;
-  }
-
-  // Same person, different slot — re-select
-  if (selection.person === person) {
-    selection = { person, day, shift, weekIdx: wi };
-    showMsg(`Re-selected ${person} on ${shift} ${day}.`, 'info');
-    render(); return;
-  }
-
-  // Different person → attempt swap (same day or cross-day)
-  doSwap(wi, selection.day, selection.person, selection.shift, day, person, shift);
+  // Open confirmation dialog
+  openDialog(selection, shift, staffName);
 }
 
-function doSwap(wi, dayA, personA, shiftA, dayB, personB, shiftB) {
-  const sched = liveWeeks[wi];
-  const sameDay = dayA === dayB;
+// ── Dialog ─────────────────────────────────────────────────────────────
+let pendingSwap = null;
 
-  if (!sched[dayA][shiftA].includes(personA)) {
-    showMsg(`${personA} is not on ${shiftA} ${dayA}.`, 'error');
-    selection = null; render(); return;
-  }
-  if (!sched[dayB][shiftB].includes(personB)) {
-    showMsg(`${personB} is not on ${shiftB} ${dayB}.`, 'error');
-    selection = null; render(); return;
-  }
-  if (personA === personB) {
-    showMsg('Cannot swap a person with themselves.', 'error');
-    selection = null; render(); return;
-  }
+function openDialog(myShift, theirShift, theirName) {
+  pendingSwap = { myShift, theirShift, theirName };
+  const myDate    = fmtDate(myShift.shiftDate);
+  const theirDate = fmtDate(theirShift.shift_date);
+  document.getElementById('dialogDesc').innerHTML =
+    `Swap your <strong>${myShift.shiftType}</strong> (${myDate}) ` +
+    `with <strong>${theirName}</strong>'s <strong>${theirShift.shift_type}</strong> (${theirDate})?` +
+    `<br><br><span style="color:var(--dim);font-size:0.75rem">This sends a request — ${theirName} will be notified via Telegram.</span>`;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('confirmBtn').disabled = false;
+}
 
-  // Cross-day: check neither ends up double-booked on target day
-  if (!sameDay) {
-    if (sched[dayB].S1.includes(personA) || sched[dayB].S2.includes(personA)) {
-      showMsg(`${personA} already works ${dayB} — would be double-booked.`, 'error');
-      selection = null; render(); return;
-    }
-    if (sched[dayA].S1.includes(personB) || sched[dayA].S2.includes(personB)) {
-      showMsg(`${personB} already works ${dayA} — would be double-booked.`, 'error');
-      selection = null; render(); return;
-    }
-  }
+function closeDialog() {
+  document.getElementById('overlay').classList.remove('show');
+  pendingSwap = null;
+}
 
-  // Guard Max fixed S2 nights
-  if (personA === 'Max' && shiftA === 'S2' && maxMarker(wi, dayA, 'S2') === '★') {
-    showMsg(`Cannot remove Max from his fixed S2 night ★ on ${dayA}.`, 'error');
-    selection = null; render(); return;
-  }
-  if (personB === 'Max' && shiftB === 'S2' && maxMarker(wi, dayB, 'S2') === '★') {
-    showMsg(`Cannot remove Max from his fixed S2 night ★ on ${dayB}.`, 'error');
-    selection = null; render(); return;
-  }
+async function submitSwap() {
+  if (!pendingSwap || !myPin) return;
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
 
-  // Snapshot BEFORE any changes
-  swapHistory.push({ weekIdx: wi, snapshot: deepCopy(sched) });
+  const { data, error } = await db.rpc('request_swap', {
+    p_pin:           myPin,
+    p_my_shift_id:   pendingSwap.myShift.shiftId,
+    p_their_shift_id: pendingSwap.theirShift.id,
+  });
 
-  // Apply: remove each from their slot, add to the other's slot
-  sched[dayA][shiftA] = sched[dayA][shiftA].filter(p => p !== personA);
-  sched[dayB][shiftB] = sched[dayB][shiftB].filter(p => p !== personB);
-  sched[dayA][shiftA].push(personB);
-  sched[dayB][shiftB].push(personA);
+  closeDialog();
+  btn.textContent = 'Send Request';
 
-  // Check coverage (min 2) — rollback if violated
-  if (sched[dayA][shiftA].length < 2 || sched[dayB][shiftB].length < 2) {
-    liveWeeks[wi] = swapHistory.pop().snapshot;
-    showMsg(`Swap rejected — would drop a shift below minimum 2 staff.`, 'error');
-    selection = null; render(); return;
+  if (error) {
+    showStatus(`Error: ${error.message}`, 'error', 5000);
+    return;
   }
-
-  // Balance warnings
-  const warnings = [];
-  function countPost(p) {
-    let s1=0, s2=0;
-    for (const d of DAYS) { if (sched[d].S1.includes(p)) s1++; if (sched[d].S2.includes(p)) s2++; }
-    return { s1, s2 };
+  if (data && data.error) {
+    showStatus(`Error: ${data.error}`, 'error', 5000);
+    return;
   }
-  const ba = countPost(personA), bb = countPost(personB);
-  if (Math.abs(ba.s1 - ba.s2) > 2) warnings.push(`${personA} → ${ba.s1}×S1/${ba.s2}×S2 (imbalanced)`);
-  if (Math.abs(bb.s1 - bb.s2) > 2) warnings.push(`${personB} → ${bb.s1}×S1/${bb.s2}×S2 (imbalanced)`);
-  if (personA === 'Max' && shiftA === 'S2' && maxMarker(wi, dayA, 'S2') === '☆') warnings.push(`Moved Max off random S2 ☆ ${dayA}.`);
-  if (personB === 'Max' && shiftB === 'S2' && maxMarker(wi, dayB, 'S2') === '☆') warnings.push(`Moved Max off random S2 ☆ ${dayB}.`);
 
   selection = null;
-  const label = sameDay ? `on ${dayA}` : `${dayA} ↔ ${dayB}`;
-  const msg = `✓ Swap: ${personA} (${shiftA} ${dayA}) ↔ ${personB} (${shiftB} ${dayB})`;
-  showMsg(warnings.length ? msg + '  ⚠ ' + warnings.join(' ') : msg,
-          warnings.length ? 'warn' : 'success');
-  render();
+  showStatus(`Swap request sent to ${pendingSwap?.theirName || 'staff member'}`, 'ok', 4000);
+  renderCalendar();
+  loadPending();
 }
 
-function undoSwap() {
-  if (!swapHistory.length) return;
-  const last = swapHistory.pop();
-  liveWeeks[last.weekIdx] = last.snapshot;
-  currentWeek = last.weekIdx;
-  updateWeekBtns();
-  showMsg('Last swap undone.', 'info');
-  render();
-}
+// ── Init ───────────────────────────────────────────────────────────────
+document.getElementById('pinBtn').addEventListener('click', doLogin);
+document.getElementById('pinInput').addEventListener('keyup', e => { if (e.key === 'Enter') doLogin(); });
+document.getElementById('logoutBtn').addEventListener('click', doLogout);
+document.getElementById('prevBtn').addEventListener('click', () => { monthOffset--; loadRoster(); });
+document.getElementById('nextBtn').addEventListener('click', () => { monthOffset++; loadRoster(); });
+document.getElementById('statusDismiss').addEventListener('click', hideStatus);
+document.getElementById('cancelBtn').addEventListener('click', closeDialog);
+document.getElementById('confirmBtn').addEventListener('click', submitSwap);
+document.getElementById('overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('overlay')) closeDialog();
+});
 
-function resetSwaps() {
-  liveWeeks   = BASE_WEEKS.map(w => deepCopy(w));
-  swapHistory = [];
-  selection   = null;
-  showMsg('All swaps reset to base schedule.', 'info');
-  render();
-}
-
-// ═══════════════════════════════════════════════════════════
-// UI HELPERS
-// ═══════════════════════════════════════════════════════════
-function setWeek(idx) {
-  currentWeek = idx;
-  selection   = null;
-  updateWeekBtns();
-  render();
-}
-
-function updateWeekBtns() {
-  document.querySelectorAll('.week-btn').forEach((btn, i) => {
-    btn.classList.toggle('active', i === currentWeek);
-  });
-}
-
-function showMsg(text, type) {
-  const el = document.getElementById('swapMsg');
-  el.textContent = text;
-  el.className = `swap-msg show ${type}`;
-  if (msgTimer) clearTimeout(msgTimer);
-  if (type === 'success' || type === 'info') {
-    msgTimer = setTimeout(() => el.classList.remove('show'), 4000);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// INIT
-// ═══════════════════════════════════════════════════════════
-render();
+restoreSession();
+updateAuthUI();
+loadRoster();
 </script>
 </body>
 </html>
